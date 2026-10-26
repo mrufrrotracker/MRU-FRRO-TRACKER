@@ -1,0 +1,6 @@
+-- Run in Supabase SQL Editor as project owner AFTER registering your own account.
+-- Replace the UUID with your own auth.users.id from Authentication > Users.
+-- Do not run this with a student UUID.
+UPDATE public.student_profiles
+SET role = 'admin', verification_status = 'verified'
+WHERE user_id = 'REPLACE-WITH-YOUR-AUTH-USER-UUID';

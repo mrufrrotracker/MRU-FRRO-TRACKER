@@ -1,0 +1,24 @@
+-- Example only. Configure the actual project URL and Edge Function secret in Supabase Vault.
+-- Enable the pg_cron and pg_net extensions first.
+-- Create a Vault secret named 'project_url' containing https://YOUR_PROJECT_REF.supabase.co
+-- Create a Vault secret named 'frro_reminder_function_secret' containing the secret you configure
+-- for the Edge Function. Do not put service-role keys in frontend code.
+--
+-- select cron.schedule(
+--   'send-frro-reminders-daily',
+--   '5 3 * * *',
+--   $$
+--   select net.http_post(
+--     url := (select decrypted_secret from vault.decrypted_secrets where name = 'project_url')
+--            || '/functions/v1/send-frro-reminders',
+--     headers := jsonb_build_object(
+--       'Content-Type', 'application/json',
+--       'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'frro_reminder_function_secret')
+--     ),
+--     body := jsonb_build_object('source', 'pg_cron')
+--   );
+--   $$
+-- );
+--
+-- Schedule is 03:05 UTC daily (08:35 India Standard Time).
+-- Verify your Supabase project supports pg_cron, pg_net and Vault before enabling.

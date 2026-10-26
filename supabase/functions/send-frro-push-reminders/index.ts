@@ -1,0 +1,292 @@
+
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+
+const REMINDER_DAYS = [60, 45, 30, 21, 14, 10, 7, 3, 2, 1];
+
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+};
+
+Deno.serve(async (req) => {
+  if (req.method === 'OPTIONS') {
+    return new Response('ok', { headers: corsHeaders });
+  }
+
+  const expectedSecret = Deno.env.get('FRRO_REMINDER_FUNCTION_SECRET');
+  const authHeader = req.headers.get('Authorization') || '';
+
+  if (!expectedSecret || authHeader !== `Bearer ${expectedSecret}`) {
+    return json({ error: 'Unauthorized' }, 401);
+  }
+
+  const supabaseUrl = Deno.env.get('SUPABASE_URL');
+  const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+  const projectId = Deno.env.get('FIREBASE_PROJECT_ID');
+  const clientEmail = Deno.env.get('FIREBASE_CLIENT_EMAIL');
+  const privateKey = Deno.env.get('FIREBASE_PRIVATE_KEY');
+
+  if (!supabaseUrl || !serviceRoleKey || !projectId || !clientEmail || !privateKey) {
+    return json({ error: 'One or more required Supabase/Firebase secrets are missing.' }, 500);
+  }
+
+  const db = createClient(supabaseUrl, serviceRoleKey);
+  const today = new Date().toISOString().slice(0, 10);
+const requestUrl = new URL(req.url);
+const dryRun = requestUrl.searchParams.get('dry_run') === 'true';
+  const results: Array<Record<string, unknown>> = [];
+
+  for (const daysBefore of REMINDER_DAYS) {
+    const expiry = new Date(`${today}T00:00:00Z`);
+    expiry.setUTCDate(expiry.getUTCDate() + daysBefore);
+    const expiryDate = expiry.toISOString().slice(0, 10);
+
+       const { data: records, error: recordsError } = await db
+      .from('frro_records')
+      .select('user_id,next_expiry_date')
+     .eq('next_expiry_date', expiryDate);
+
+    if (recordsError) {
+      results.push({ days_before: daysBefore, status: 'query_error', error: recordsError.message });
+      continue;
+    }
+
+    for (const record of records ?? []) {
+      if (dryRun) {
+        const { count, error: deviceCountError } = await db
+          .from('push_device_tokens')
+          .select('id', { count: 'exact', head: true })
+          .eq('user_id', record.user_id)
+          .eq('platform', 'android');
+
+        results.push({
+          user_id: record.user_id,
+          expiry_date: record.next_expiry_date,
+          days_before: daysBefore,
+          status: deviceCountError ? 'device_query_error' : 'dry_run',
+          android_devices: deviceCountError ? null : count,
+          error: deviceCountError?.message
+        });
+                continue;
+      }
+
+      let accessToken: string;
+      try {
+        accessToken = await getFirebaseAccessToken(clientEmail, privateKey);
+      } catch (error) {
+        results.push({
+          user_id: record.user_id,
+          days_before: daysBefore,
+          status: 'firebase_auth_error',
+          error: String(error)
+        });
+        continue;
+      }
+            const { data: devices, error: devicesError } = await db
+        .from('push_device_tokens')
+        .select('token')
+        .eq('user_id', record.user_id)
+        .eq('platform', 'android');
+
+      if (devicesError) {
+        results.push({ user_id: record.user_id, days_before: daysBefore, status: 'device_query_error', error: devicesError.message });
+        continue;
+      }
+
+      if (!devices?.length) {
+        results.push({ user_id: record.user_id, days_before: daysBefore, status: 'no_device' });
+        continue;
+      }
+
+      // Claim once per user, expiry date, interval and channel.
+      const { error: claimError } = await db.from('reminder_log').insert({
+        user_id: record.user_id,
+        expiry_date: record.next_expiry_date,
+        days_before: daysBefore,
+        channel: 'push',
+        status: 'processing'
+      });
+
+      if (claimError) {
+        if (claimError.code === '23505') {
+          results.push({ user_id: record.user_id, days_before: daysBefore, status: 'already_claimed' });
+          continue;
+        }
+
+        results.push({ user_id: record.user_id, days_before: daysBefore, status: 'claim_error', error: claimError.message });
+        continue;
+      }
+
+      const title = `FRRO reminder: ${daysBefore} day${daysBefore === 1 ? '' : 's'} remaining`;
+      const body = `Your FRRO record expires on ${record.next_expiry_date}. Please plan your renewal and check the official instructions applicable to your situation.`;
+
+      try {
+        let sent = 0;
+        const errors: string[] = [];
+
+        for (const device of devices) {
+          try {
+            await sendFcm(projectId, accessToken, device.token, title, body, {
+              expiry_date: record.next_expiry_date,
+              days_before: String(daysBefore),
+            });
+            sent++;
+          } catch (error) {
+            errors.push(String(error));
+          }
+        }
+
+        if (sent === 0) {
+          throw new Error(errors.join('; ') || 'No device accepted the notification');
+        }
+
+        await db.from('reminder_log').update({
+          status: 'sent',
+          sent_at: new Date().toISOString(),
+          error_message: errors.length ? errors.join('; ') : null,
+        }).eq('user_id', record.user_id)
+          .eq('expiry_date', record.next_expiry_date)
+          .eq('days_before', daysBefore)
+          .eq('channel', 'push');
+
+        await db.from('in_app_notifications').insert({
+          user_id: record.user_id,
+          title,
+          body
+        });
+
+        results.push({
+          user_id: record.user_id,
+          days_before: daysBefore,
+          status: 'sent',
+          devices_sent: sent,
+          devices_failed: errors.length
+        });
+      } catch (error) {
+        await db.from('reminder_log').update({
+          status: 'failed',
+          error_message: String(error),
+          sent_at: null
+        }).eq('user_id', record.user_id)
+          .eq('expiry_date', record.next_expiry_date)
+          .eq('days_before', daysBefore)
+          .eq('channel', 'push');
+
+        results.push({
+          user_id: record.user_id,
+          days_before: daysBefore,
+          status: 'failed',
+          error: String(error)
+        });
+      }
+    }
+  }
+
+  return json({ date: today, results });
+});
+
+function json(data: unknown, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+  });
+}
+
+function base64Url(input: Uint8Array | string): string {
+  const bytes = typeof input === 'string' ? new TextEncoder().encode(input) : input;
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
+}
+
+async function getFirebaseAccessToken(clientEmail: string, privateKey: string): Promise<string> {
+  const pem = privateKey.replace(/\\n/g, '\n');
+  const match = pem.match(/-----BEGIN PRIVATE KEY-----([\s\S]+?)-----END PRIVATE KEY-----/);
+
+  if (!match) throw new Error('Firebase private key must be a valid PKCS8 private key.');
+
+  const keyBytes = Uint8Array.from(atob(match[1].replace(/\s/g, '')), c => c.charCodeAt(0));
+  const cryptoKey = await crypto.subtle.importKey(
+    'pkcs8',
+    keyBytes,
+    { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
+
+  const now = Math.floor(Date.now() / 1000);
+  const unsigned = `${base64Url(JSON.stringify({
+    alg: 'RS256',
+    typ: 'JWT'
+  }))}.${base64Url(JSON.stringify({
+    iss: clientEmail,
+    scope: 'https://www.googleapis.com/auth/firebase.messaging',
+    aud: 'https://oauth2.googleapis.com/token',
+    iat: now,
+    exp: now + 3600
+  }))}`;
+
+  const signature = new Uint8Array(await crypto.subtle.sign(
+    'RSASSA-PKCS1-v1_5',
+    cryptoKey,
+    new TextEncoder().encode(unsigned)
+  ));
+
+  const assertion = `${unsigned}.${base64Url(signature)}`;
+  const response = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+      assertion
+    })
+  });
+
+  const data = await response.json();
+
+  if (!response.ok || !data.access_token) {
+    throw new Error(data.error_description || data.error || 'Could not obtain Firebase access token.');
+  }
+
+  return data.access_token;
+}
+
+async function sendFcm(
+  projectId: string,
+  accessToken: string,
+  deviceToken: string,
+  title: string,
+  body: string,
+  data: Record<string, string>
+) {
+  const response = await fetch(
+    `https://fcm.googleapis.com/v1/projects/${projectId}/messages:send`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        message: {
+          token: deviceToken,
+          notification: { title, body },
+          data,
+          android: {
+            priority: 'HIGH',
+            notification: { channel_id: 'default' }
+          }
+        }
+      })
+    }
+  );
+
+  const result = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    throw new Error(result.error?.message || `FCM returned HTTP ${response.status}`);
+  }
+
+  return result;
+}
+

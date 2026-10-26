@@ -1,0 +1,1273 @@
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  Activity, AlertCircle, ArrowDownRight, ArrowUpRight, Bell, CalendarDays,
+  CheckCircle2, ChevronRight, Clock3, History, LogOut, Mail, MessageSquareText,
+  RefreshCw, Search, Send, ShieldCheck, Users, XCircle
+} from 'lucide-react';
+import { supabase, supabaseConfigured } from './supabase';
+import { Capacitor } from '@capacitor/core';
+import {
+  PushNotifications
+} from '@capacitor/push-notifications';
+
+const REMINDER_DAYS = [60, 45, 30, 21, 14, 10, 7, 3, 2, 1];
+const todayISO = () => new Date().toISOString().slice(0, 10);
+const dayDiff = (date) => date ? Math.ceil((Date.parse(`${date}T00:00:00Z`) - Date.parse(`${todayISO()}T00:00:00Z`)) / 86400000) : null;
+const dateLabel = (date) => date ? new Date(`${date}T12:00:00`).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Not set';
+
+
+function statusFor(date) {
+  const days = dayDiff(date);
+
+  if (days === null) {
+    return { label: 'Date missing', tone: 'muted' };
+  }
+
+  if (days < 0) {
+    return { label: 'Expired', tone: 'danger' };
+  }
+
+  if (days < 60) {
+    return {
+      label: 'Urgent renewal application required',
+      tone: days <= 14 ? 'danger' : 'warning'
+    };
+  }
+
+  return { label: 'On track', tone: 'success' };
+}
+
+
+function Stat({ label, value, icon, hint, tone = 'success' }) {
+  return (
+    <div className={`stat-card ${tone}`}>
+      <div className="stat-icon">{icon}</div>
+      <div className="stat-content">
+        <span className="stat-label">{label}</span>
+        <strong className="stat-value">{value}</strong>
+        <span className="stat-hint">{hint}</span>
+      </div>
+    </div>
+  );
+}
+
+function Notice({ notice, clear }) {
+  if (!notice) return null;
+  return <div className={`notice ${notice.type}`} role="status">
+    {notice.type === 'error' ? <AlertCircle size={18} /> : <CheckCircle2 size={18} />}
+    <span>{notice.text}</span><button className="icon-button" onClick={clear} aria-label="Dismiss"><XCircle size={17} /></button>
+  </div>;
+}
+
+export default function App() {
+  const [showPassword, setShowPassword] = useState(false);
+  const [session, setSession] = useState(null);
+  const [profile, setProfile] = useState(null);
+  const [record, setRecord] = useState({
+    previous_renewal_date: '',
+    frro_issue_date: '',
+    next_expiry_date: ''
+  });
+
+  const [studentDetails, setStudentDetails] = useState({
+    full_name: '',
+    roll_no: '',
+    course: '',
+    country: ''
+  });
+  const [students, setStudents] = useState([]);
+  const [renewalHistory, setRenewalHistory] = useState([]);
+  const [notifications, setNotifications] = useState([]);
+  const [mode, setMode] = useState('login');
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [editingDates, setEditingDates] = useState(false);
+  const [notice, setNotice] = useState(null);
+  const [search, setSearch] = useState('');
+  const [filter, setFilter] = useState('all');
+  const [selectedStudents, setSelectedStudents] = useState([]);
+  const [messageTitle, setMessageTitle] = useState('');
+  const [messageBody, setMessageBody] = useState('');
+  const [sending, setSending] = useState(false);
+  const [tab, setTab] = useState('renewals');
+
+  const flash = (text, type = 'success') => setNotice({ text, type });
+
+  useEffect(() => {
+    if (!supabase) return;
+    supabase.auth.getSession().then(({ data, error }) => {
+      if (error) flash(error.message, 'error');
+      setSession(data?.session ?? null);
+    });
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, next) => setSession(next));
+    return () => listener.subscription.unsubscribe();
+  }, []);
+  useEffect(() => {
+    console.log(
+      'PUSH DEBUG:',
+      'session user =',
+      session?.user?.id,
+      'native =',
+      Capacitor.isNativePlatform()
+    );
+    if (!session?.user || !Capacitor.isNativePlatform()) return;
+
+    let registrationListener;
+    let errorListener;
+
+    const registerForPush = async () => {
+      try {
+        let permission =
+          await PushNotifications.checkPermissions();
+
+        if (permission.receive === 'prompt') {
+          permission =
+            await PushNotifications.requestPermissions();
+        }
+
+        if (permission.receive !== 'granted') {
+          console.warn('Push notification permission not granted.');
+          return;
+        }
+
+        registrationListener =
+          await PushNotifications.addListener(
+            'registration',
+            async token => {
+              console.log('FCM registration successful.');
+
+              const { error } = await supabase
+                .from('push_device_tokens')
+                .upsert(
+                  {
+                    user_id: session.user.id,
+                    token: token.value,
+                    platform: Capacitor.getPlatform(),
+                    updated_at: new Date().toISOString(),
+                  },
+                  {
+                    onConflict: 'token',
+                  }
+                );
+
+              if (error) {
+                console.error('Saving push token failed:', error.message);
+              } else {
+                console.log('Push token saved to Supabase.');
+              }
+            }
+          );
+
+        errorListener =
+          await PushNotifications.addListener(
+            'registrationError',
+            error => {
+              console.error('Push registration error:', error);
+            }
+          );
+
+        await PushNotifications.register();
+      } catch (error) {
+        console.error('Push notification setup failed:', error);
+      }
+    };
+
+    registerForPush();
+
+    return () => {
+      registrationListener?.remove();
+      errorListener?.remove();
+    };
+  }, [session?.user?.id]);
+
+  const loadProfileAndData = useCallback(async () => {
+    if (!supabase || !session?.user) return;
+    setLoading(true);
+    try {
+      const { data: p, error: pe } = await supabase
+        .from('student_profiles')
+        .select('user_id,full_name,email,role,verification_status,created_at,roll_no,course,country')
+        .eq('user_id', session.user.id)
+        .maybeSingle();
+
+      if (pe) throw pe;
+
+      setProfile(p ?? null);
+
+      setStudentDetails({
+        full_name: p?.full_name ?? '',
+        roll_no: p?.roll_no ?? '',
+        course: p?.course ?? '',
+        country: p?.country ?? ''
+      });
+      const { data: r, error: re } = await supabase
+        .from('frro_records')
+        .select('id,user_id,previous_renewal_date,frro_issue_date,next_expiry_date,updated_at')
+        .eq('user_id', session.user.id)
+        .maybeSingle();
+
+      if (re) throw re;
+
+      setRecord({
+        previous_renewal_date: r?.previous_renewal_date ?? '',
+        frro_issue_date: r?.frro_issue_date ?? '',
+        next_expiry_date: r?.next_expiry_date ?? ''
+      });
+      const { data: n, error: ne } = await supabase.from('in_app_notifications')
+        .select('id,title,body,created_at,read_at')
+        .eq('user_id', session.user.id).order('created_at', { ascending: false }).limit(30);
+      if (ne) throw ne;
+      setNotifications(n ?? []);
+    } catch (e) {
+      flash(e.message || 'Could not load your account.', 'error');
+    } finally {
+      setLoading(false);
+    }
+  }, [session?.user?.id]);
+
+  useEffect(() => { loadProfileAndData(); }, [loadProfileAndData]);
+
+  const loadStudents = useCallback(async () => {
+    if (!supabase || profile?.role !== 'admin') return;
+    setLoading(true);
+    try {
+      const { data: people, error: pe } = await supabase.from('student_profiles')
+        .select('user_id,full_name,email,role,verification_status,created_at,roll_no,course,country')
+        .eq('role', 'student').order('full_name');
+      if (pe) throw pe;
+      const { data: records, error: re } = await supabase.from('frro_records')
+        .select('id,user_id,previous_renewal_date,frro_issue_date,next_expiry_date,updated_at');
+      if (re) throw re;
+      const recordMap = new Map((records ?? []).map(r => [r.user_id, r]));
+      setStudents((people ?? []).map(p => ({ ...p, frro: recordMap.get(p.user_id) ?? null })));
+    } catch (e) {
+      flash(`Could not load student list: ${e.message}`, 'error');
+    } finally {
+      setLoading(false);
+    }
+  }, [profile?.role]);
+
+  const loadRenewalHistory = useCallback(async () => {
+    if (!supabase || profile?.role !== 'admin') return;
+
+    try {
+      const { data, error } = await supabase
+        .from('frro_renewal_history')
+        .select(`
+          id,
+          user_id,
+          previous_renewal_date,
+          previous_expiry_date,
+          new_renewal_date,
+          new_expiry_date,
+          changed_at
+        `)
+        .order('changed_at', { ascending: false })
+        .limit(200);
+
+      if (error) throw error;
+
+      const historyRows = data ?? [];
+      const userIds = [...new Set(historyRows.map(row => row.user_id))];
+
+      let profileMap = new Map();
+
+      if (userIds.length > 0) {
+        const { data: people, error: peopleError } = await supabase
+          .from('student_profiles')
+          .select('user_id, full_name, email')
+          .in('user_id', userIds);
+
+        if (peopleError) throw peopleError;
+
+        profileMap = new Map(
+          (people ?? []).map(person => [person.user_id, person])
+        );
+      }
+
+      setRenewalHistory(
+        historyRows.map(row => ({
+          ...row,
+          student: profileMap.get(row.user_id) ?? null
+        }))
+      );
+    } catch (e) {
+      flash(`Could not load renewal history: ${e.message}`, 'error');
+    }
+  }, [profile?.role]);
+
+
+  useEffect(() => { loadStudents(); }, [loadStudents]);
+
+  useEffect(() => {
+    loadRenewalHistory();
+  }, [loadRenewalHistory]);
+
+
+
+  async function handleAuth(event) {
+    event.preventDefault();
+
+    if (!supabase) {
+      return flash(
+        'Add your Supabase URL and anon/publishable key to .env.local first.',
+        'error'
+      );
+    }
+
+    setSaving(true);
+
+    const form = new FormData(event.currentTarget);
+    const email = String(form.get('email') || '').trim().toLowerCase();
+    const password = String(form.get('password') || '');
+    const fullName = String(form.get('full_name') || '').trim();
+    const rollNo = String(form.get('roll_no') || '').trim();
+    const course = String(form.get('course') || '').trim();
+    const country = String(form.get('country') || '').trim();
+    try {
+      if (mode === 'register') {
+        if (fullName.length < 2) {
+          throw new Error('Enter your full name.');
+        }
+        if (!rollNo || !course || !country) {
+          throw new Error('Please complete your Roll No, Course, and Country.');
+        }
+
+        if (!email || !email.includes('@')) {
+          throw new Error('Enter a valid email address.');
+        }
+
+        if (password.length < 8) {
+          throw new Error('Password must be at least 8 characters.');
+        }
+
+        const { data, error } = await supabase.auth.signUp({
+          email,
+          password,
+          options: {
+            data: {
+              full_name: fullName,
+              roll_no: rollNo,
+              course: course,
+              country: country
+            }
+          }
+        });
+
+        if (error) {
+          const message = error.message.toLowerCase();
+
+          if (
+            message.includes('already registered') ||
+            message.includes('already exists') ||
+            message.includes('user already')
+          ) {
+            throw new Error(
+              'This email is already registered. Please log in instead.'
+            );
+          }
+
+          throw error;
+        }
+
+        if (data?.user && data.user.identities?.length === 0) {
+          throw new Error(
+            'This email is already registered. Please log in instead.'
+          );
+        }
+
+
+        flash(
+          'Registration submitted. Check your email if confirmation is enabled.'
+        );
+
+        setMode('login');
+      } else {
+        const { error } = await supabase.auth.signInWithPassword({
+          email,
+          password
+        });
+
+        if (error) {
+          console.error('Supabase login error:', error.message);
+          throw error;
+        }
+      }
+    } catch (e) {
+      console.error('Authentication error:', e.message);
+      flash(e.message || 'Authentication failed.', 'error');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function saveDates(event) {
+    event.preventDefault();
+
+    if (!supabase || !session?.user) return;
+
+    if (
+      !studentDetails.full_name.trim() ||
+      !studentDetails.roll_no.trim() ||
+      !studentDetails.course.trim() ||
+      !studentDetails.country.trim()
+    ) {
+      return flash('Please complete all student details.', 'error');
+    }
+
+    if (!record.frro_issue_date || !record.next_expiry_date) {
+      return flash('Enter the FRRO issue date and expiry date.', 'error');
+    }
+
+    if (record.frro_issue_date > record.next_expiry_date) {
+      return flash('Issue date cannot be after expiry date.', 'error');
+    }
+
+    if (
+      record.previous_renewal_date &&
+      record.previous_renewal_date > record.next_expiry_date
+    ) {
+      return flash('Previous renewal date cannot be after expiry date.', 'error');
+    }
+
+    setSaving(true);
+
+    try {
+      const { error: profileError } = await supabase
+        .from('student_profiles')
+        .update({
+          full_name: studentDetails.full_name.trim(),
+          roll_no: studentDetails.roll_no.trim(),
+          course: studentDetails.course.trim(),
+          country: studentDetails.country.trim()
+        })
+        .eq('user_id', session.user.id);
+
+      if (profileError) throw profileError;
+
+      const { error: recordError } = await supabase
+        .from('frro_records')
+        .upsert({
+          user_id: session.user.id,
+          previous_renewal_date: record.previous_renewal_date || null,
+          frro_issue_date: record.frro_issue_date,
+          next_expiry_date: record.next_expiry_date
+        }, { onConflict: 'user_id' });
+
+      if (recordError) throw recordError;
+
+      setEditingDates(false);
+      flash('Student details and FRRO dates saved successfully.');
+
+      await loadProfileAndData();
+      await loadStudents();
+    } catch (e) {
+      flash(e.message || 'Could not save your details.', 'error');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+
+  async function sendAnnouncement(event) {
+    event.preventDefault();
+
+    if (!supabase || profile?.role !== 'admin') return;
+
+    if (!messageTitle.trim() || !messageBody.trim()) {
+      return flash('Enter a message title and message.', 'error');
+    }
+
+    if (selectedStudents.length === 0) {
+      return flash('Select at least one student before sending.', 'error');
+    }
+
+    setSending(true);
+
+    try {
+      const recipients = students
+        .filter(s => selectedStudents.includes(s.user_id))
+        .map(s => ({
+          user_id: s.user_id,
+          title: messageTitle.trim(),
+          body: messageBody.trim()
+        }));
+
+      if (!recipients.length) {
+        throw new Error('No selected student accounts were found.');
+      }
+
+
+      const { error } = await supabase
+        .from('in_app_notifications')
+        .insert(recipients);
+
+      if (error) throw error;
+
+      // Send a push notification to each selected student.
+      const pushResults = await Promise.all(
+        recipients.map(async (recipient) => {
+          const { data, error } = await supabase.functions.invoke(
+            'send-push',
+            {
+              body: {
+                user_id: recipient.user_id,
+                title: recipient.title,
+                message: recipient.body,
+              },
+            }
+          );
+
+          if (error) {
+            return { user_id: recipient.user_id, success: false };
+          }
+
+          if (data?.error) {
+            return { user_id: recipient.user_id, success: false };
+          }
+
+          return {
+            user_id: recipient.user_id,
+            success: true,
+            sent: data?.sent ?? 0,
+          };
+        })
+      );
+
+
+      const pushSent = pushResults.filter(
+        (result) => result.success && result.sent > 0
+      ).length;
+
+      const pushFailed = pushResults.filter(
+        (result) => !result.success
+      ).length;
+
+      const noDevice = pushResults.filter(
+        (result) => result.success && result.sent === 0
+      ).length;
+
+      console.log('Push notification results:', {
+        students: recipients.length,
+        pushSent,
+        pushFailed,
+        noDevice,
+        results: pushResults,
+      });
+
+      const pushNotSent = recipients.length - pushSent;
+
+      if (pushNotSent === 0) {
+        flash(
+          `Announcement saved. Push accepted by Firebase for ${pushSent} student(s).`
+        );
+      } else {
+        flash(
+          `Announcement saved for ${recipients.length} student(s). Push accepted for ${pushSent}; not confirmed for ${pushNotSent}.`,
+          'error'
+        );
+      }
+
+      setMessageTitle('');
+      setMessageBody('');
+      setSelectedStudents([]);
+    } catch (e) {
+      flash(e.message || 'Could not send announcement.', 'error');
+    } finally {
+      setSending(false);
+    }
+  }
+
+
+  async function markRead(id) {
+    const { error } = await supabase.from('in_app_notifications').update({ read_at: new Date().toISOString() }).eq('id', id);
+    if (error) flash(error.message, 'error');
+    else setNotifications(prev => prev.map(n => n.id === id ? { ...n, read_at: new Date().toISOString() } : n));
+  }
+
+  async function signOut() {
+    await supabase?.auth.signOut();
+    setProfile(null); setStudents([]); setRecord({ previous_renewal_date: '', next_expiry_date: '' });
+  }
+
+
+  const filteredStudents = useMemo(() => students.filter(s => {
+    const q = search.trim().toLowerCase();
+    const days = dayDiff(s.frro?.next_expiry_date);
+
+    const urgent = days !== null && days >= 0 && days < 60;
+    const expired = days !== null && days < 0;
+    const missing = !s.frro?.next_expiry_date;
+
+    const statusText = missing
+      ? 'dates missing'
+      : expired
+        ? 'expired'
+        : urgent
+          ? 'urgent renewal application required due soon'
+          : 'active';
+
+    const searchableText =
+      `${s.full_name ?? ''} ${s.email ?? ''} ${statusText}`.toLowerCase();
+
+    if (!searchableText.includes(q)) return false;
+
+    if (filter === 'due') return urgent;
+    if (filter === 'urgent') return urgent;
+    if (filter === 'expired') return expired;
+    if (filter === 'missing') return missing;
+    if (filter === 'verified') {
+      return s.verification_status === 'verified';
+    }
+
+    return true;
+  }), [students, search, filter]);
+
+
+  const counts = useMemo(() => {
+    const due = students.filter(s => {
+      const d = dayDiff(s.frro?.next_expiry_date);
+      return d !== null && d >= 0 && d < 60;
+    }).length;
+    const expired = students.filter(s => dayDiff(s.frro?.next_expiry_date) !== null && dayDiff(s.frro?.next_expiry_date) < 0).length;
+    const missing = students.filter(s => !s.frro?.next_expiry_date).length;
+    return { total: students.length, due, expired, missing };
+  }, [students]);
+
+  if (!supabaseConfigured) return <div className="setup-screen"><div className="auth-card setup-card"><div className="brand"><div className="brand-icon">MRU</div><div><strong>MRU FRRO Tracker</strong><span>Student renewal management</span></div></div><div className="setup-symbol"><ShieldCheck size={30} /></div><h1>Connect your Supabase project</h1><p>Create <code>.env.local</code> from <code>.env.example</code>, add your project URL and publishable/anon key, then restart the development server.</p><div className="setup-code">VITE_SUPABASE_URL=https://YOUR_PROJECT.supabase.co<br />VITE_SUPABASE_ANON_KEY=YOUR_PUBLIC_KEY</div><p className="muted">Never put a Supabase service-role key in a browser app.</p></div></div>;
+
+  if (!session) return <div className="auth-layout"><div className="auth-intro"><div className="brand"><div className="brand-icon">MRU</div><div><strong>MRU FRRO Tracker</strong><span>International student services</span></div></div><div className="intro-copy"><div className="eyebrow">RENEWAL MANAGEMENT, MADE SIMPLE</div><h1>Know your dates.<br /><em>Stay prepared.</em></h1><p>A calmer way to track FRRO renewals, receive timely reminders, and keep important dates in one place.</p><div className="intro-points"><span><CheckCircle2 size={17} /> Two essential dates</span><span><Bell size={17} /> Ten reminder milestones</span><span><ShieldCheck size={17} /> Protected student records</span></div></div><div className="intro-footer">MRU · Student support workspace</div></div><div className="auth-panel"><form className="auth-card" onSubmit={handleAuth}><div className="auth-card-head"><span className="eyebrow">{mode === 'login' ? 'WELCOME BACK' : 'GET STARTED'}</span><h2>{mode === 'login' ? 'Sign in to your account' : 'Create a student account'}</h2><p>{mode === 'login' ? 'Access your renewal details and reminders.' : 'Register to save your FRRO renewal dates.'}</p></div>
+    {mode === 'register' && (
+      <>
+        <label>
+          Student name
+          <input
+            name="full_name"
+            autoComplete="name"
+            required
+            placeholder="Your full name"
+          />
+        </label>
+
+        <label>
+          Roll No
+          <input
+            name="roll_no"
+            required
+            placeholder="Your university roll number"
+          />
+        </label>
+
+        <label>
+          Course
+          <input
+            name="course"
+            required
+            placeholder="Your course"
+          />
+        </label>
+
+        <label>
+          Country
+          <input
+            name="country"
+            required
+            placeholder="Your country"
+          />
+        </label>
+      </>
+    )}
+    <label>Email address<input name="email" type="email" autoComplete="email" required placeholder="you@example.com" /></label>
+    <label>
+      Password
+      <div className="password-input-wrap">
+        <input
+          name="password"
+          type={showPassword ? 'text' : 'password'}
+          minLength="8"
+          autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+          required
+          placeholder="At least 8 characters"
+        />
+        <button
+          type="button"
+          className="password-toggle"
+          onClick={() => setShowPassword((current) => !current)}
+          aria-label={showPassword ? 'Hide password' : 'Show password'}
+        >
+          {showPassword ? 'Hide' : 'Show'}
+        </button>
+      </div>
+    </label>
+    <button className="primary-button" disabled={saving}>{saving ? 'Please wait…' : mode === 'login' ? 'Sign in' : 'Create account'}<ChevronRight size={18} /></button><p className="switch-auth">{mode === 'login' ? 'New student?' : 'Already registered?'} <button type="button" onClick={() => { setMode(mode === 'login' ? 'register' : 'login'); setNotice(null); }}>{mode === 'login' ? 'Create an account' : 'Sign in instead'}</button></p><Notice notice={notice} clear={() => setNotice(null)} /></form><div className="auth-footnote">Your FRRO details should be handled only in an approved, access-controlled deployment.</div></div></div>;
+
+  const isAdmin = profile?.role === 'admin' && profile?.verification_status === 'verified';
+  const myDays = dayDiff(record.next_expiry_date);
+  return <div className="app-frame">
+    <aside className="sidebar">
+      <div className="brand sidebar-brand"><div className="brand-icon">MRU</div><div><strong>FRRO Tracker</strong><span>Student services</span></div></div>
+      <div className="side-label">WORKSPACE</div>
+
+      {isAdmin ? <>
+        <button
+          className={`nav-item ${tab === 'renewals' ? 'active' : ''}`}
+          onClick={() => setTab('renewals')}
+        >
+          <Activity size={18} /> Renewal overview
+        </button>
+
+        <button
+          className={`nav-item ${tab === 'history' ? 'active' : ''}`}
+          onClick={() => setTab('history')}
+        >
+          <History size={18} /> Renewal history
+        </button>
+
+        <button
+          className={`nav-item ${tab === 'messages' ? 'active' : ''}`}
+          onClick={() => setTab('messages')}
+        >
+          <MessageSquareText size={18} /> Push messages
+        </button>
+      </> : <div className="nav-item active"><CalendarDays size={18} /> My FRRO dates</div>}
+
+      <div className="sidebar-bottom"><div className="profile-mini"><div className="avatar">{(profile?.full_name || session.user.email || 'U').slice(0, 1).toUpperCase()}</div><div><strong>{profile?.full_name || 'Account'}</strong><span>{isAdmin ? 'Administrator' : 'Student account'}</span></div></div><button className="nav-item signout" onClick={signOut}><LogOut size={18} /> Sign out</button></div>
+    </aside>
+    <main className="main-area">
+      <header className="page-header"><div><span className="eyebrow">{isAdmin ? 'ADMINISTRATION' : 'STUDENT PORTAL'}</span><h1>{isAdmin ? 'Renewal overview' : `Hello, ${(profile?.full_name || 'there').split(' ')[0]}`}</h1><p>{isAdmin ? 'Monitor expiry dates and keep students informed.' : 'Keep your two important FRRO dates up to date.'}</p></div><div className="header-actions"><span className="live-pill"><span /> Connected</span><button className="icon-button refresh" title="Refresh data" onClick={() => { loadProfileAndData(); loadStudents(); loadRenewalHistory(); }}><RefreshCw size={18} /></button></div></header>
+      <Notice notice={notice} clear={() => setNotice(null)} />
+      {!profile ? <section className="panel empty-state"><ShieldCheck size={28} /><h2>Profile is being prepared</h2><p>If this persists, confirm that the database setup SQL has been applied and then sign out and back in.</p><button className="secondary-button" onClick={loadProfileAndData}>Try again</button></section> : isAdmin ? <>
+        <section className="stats-grid">
+          <Stat label="Total students" value={counts.total} icon={<Users />} hint="Registered student profiles" />
+          <Stat label="Due within 60 days" value={counts.due} icon={<Clock3 />} hint="Renewal action needed" tone="warning" />
+          <Stat label="Expired" value={counts.expired} icon={<AlertCircle />} hint="Past the expiry date" tone="danger" />
+          <Stat label="Dates missing" value={counts.missing} icon={<CalendarDays />} hint="Follow up with students" />
+        </section>
+        {tab === 'renewals' ? <section className="panel">
+          <div className="panel-heading"><div><h2>Student renewal register</h2><p>All student profiles and their next expiry dates.</p></div><button className="secondary-button" onClick={loadStudents}><RefreshCw size={16} /> Refresh</button></div>
+
+          <div className="toolbar">
+            <div className="search-box">
+              <Search size={17} />
+              <input
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                placeholder="Search name, email, or status"
+              />
+            </div>
+
+            <select
+              value={filter}
+              onChange={e => setFilter(e.target.value)}
+              aria-label="Filter students"
+            >
+              <option value="all">All students</option>
+              <option value="urgent">Urgent renewal application required</option>
+              <option value="expired">Expired students only</option>
+              <option value="missing">Dates missing</option>
+              <option value="verified">Verified profiles</option>
+            </select>
+          </div>
+
+          <div className="selection-toolbar">
+            <label>
+              <input
+                type="checkbox"
+                checked={
+                  filteredStudents.length > 0 &&
+                  filteredStudents.every(s =>
+                    selectedStudents.includes(s.user_id)
+                  )
+                }
+                onChange={e =>
+                  setSelectedStudents(prev =>
+                    e.target.checked
+                      ? [
+                        ...new Set([
+                          ...prev,
+                          ...filteredStudents.map(s => s.user_id)
+                        ])
+                      ]
+                      : prev.filter(
+                        id => !filteredStudents.some(s => s.user_id === id)
+                      )
+                  )
+                }
+              />
+              Select all students shown ({filteredStudents.length})
+            </label>
+
+            <span>{selectedStudents.length} selected</span>
+
+            <button
+              type="button"
+              onClick={() => setTab('messages')}
+              disabled={selectedStudents.length === 0}
+            >
+              Send push message
+            </button>
+          </div>
+
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Select</th>
+                  <th>Student name</th>
+                  <th>Roll No.</th>
+                  <th>Course</th>
+                  <th>Country</th>
+                  <th>FRRO issue date</th>
+                  <th>Expiry date</th>
+                  <th>Time left</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredStudents.map(s => {
+                  const days = dayDiff(s.frro?.next_expiry_date);
+                  const status = statusFor(s.frro?.next_expiry_date);
+
+                  return (
+                    <tr key={s.user_id}>
+                      <td>
+                        <input
+                          type="checkbox"
+                          aria-label={`Select ${s.full_name || s.email}`}
+                          checked={selectedStudents.includes(s.user_id)}
+                          onChange={e =>
+                            setSelectedStudents(prev =>
+                              e.target.checked
+                                ? [...new Set([...prev, s.user_id])]
+                                : prev.filter(id => id !== s.user_id)
+                            )
+                          }
+                        />
+                      </td>
+                      <td>
+                        <div className="student-cell">
+                          <div className="avatar">
+                            {(s.full_name || s.email || '?')
+                              .slice(0, 1)
+                              .toUpperCase()}
+                          </div>
+                          <div>
+                            <strong>{s.full_name || 'Unnamed student'}</strong>
+                            <span>{s.email}</span>
+                          </div>
+                        </div>
+                      </td>
+                      <td>{s.roll_no || 'Not entered'}</td>
+                      <td>{s.course || 'Not entered'}</td>
+                      <td>{s.country || 'Not entered'}</td>
+                      <td>{dateLabel(s.frro?.frro_issue_date)}</td>
+                      <td>{dateLabel(s.frro?.next_expiry_date)}</td>
+                      <td>
+                        {days === null
+                          ? '—'
+                          : days < 0
+                            ? `${Math.abs(days)} days overdue`
+                            : `${days} days`}
+                      </td>
+                      <td>
+                        <span className={`status-pill ${status.tone}`}>
+                          {status.label}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
+
+                {!filteredStudents.length && (
+                  <tr>
+                    <td colSpan="9">
+                      <div className="table-empty">
+                        {loading
+                          ? 'Loading student records…'
+                          : 'No students match this view yet.'}
+                      </div>
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+
+        </section> : tab === 'history' ? <section className="panel">
+          <div className="panel-heading">
+            <div>
+              <h2>Renewal history</h2>
+              <p>Review changes made to students' FRRO dates.</p>
+            </div>
+            <button className="secondary-button" onClick={loadRenewalHistory}>
+              <RefreshCw size={16} /> Refresh
+            </button>
+          </div>
+
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Student</th>
+                  <th>Previous renewal date</th>
+                  <th>New renewal date</th>
+                  <th>Previous expiry date</th>
+                  <th>New expiry date</th>
+                  <th>Changed at</th>
+                </tr>
+              </thead>
+              <tbody>
+                {renewalHistory.map(item => (
+                  <tr key={item.id}>
+                    <td>
+                      <div className="student-cell">
+                        <div className="avatar">
+                          {(item.student?.full_name || '?').slice(0, 1).toUpperCase()}
+                        </div>
+                        <div>
+                          <strong>{item.student?.full_name || 'Unknown student'}</strong>
+                          <span>{item.student?.email || item.user_id}</span>
+                        </div>
+                      </div>
+                    </td>
+                    <td>{dateLabel(item.previous_renewal_date)}</td>
+                    <td>{dateLabel(item.new_renewal_date)}</td>
+                    <td>{dateLabel(item.previous_expiry_date)}</td>
+                    <td>{dateLabel(item.new_expiry_date)}</td>
+                    <td>{new Date(item.changed_at).toLocaleString('en-IN')}</td>
+                  </tr>
+                ))}
+                {!renewalHistory.length && (
+                  <tr>
+                    <td colSpan="6">
+                      <div className="table-empty">
+                        No renewal history records found yet.
+                      </div>
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="table-footer">
+            <span>Showing {renewalHistory.length} recent changes</span>
+            <span>Latest changes appear first</span>
+          </div>
+
+
+        </section> : <section className="panel message-panel">
+          <div className="panel-heading">
+            <div>
+              <h2>Push messages</h2>
+              <p>Send an in-app announcement to the students you selected.</p>
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => setTab('renewals')}
+              >
+                <Users size={16} />
+                Select students
+              </button>
+
+              <div className="message-icon">
+                <Send size={20} />
+              </div>
+            </div>
+          </div>
+
+          <form className="message-form" onSubmit={sendAnnouncement}>
+            <label>
+              Message title
+              <input
+                value={messageTitle}
+                onChange={e => setMessageTitle(e.target.value)}
+                maxLength={120}
+                required
+                placeholder="e.g. FRRO renewal reminder"
+              />
+            </label>
+
+
+            <label>
+              Message
+              <textarea
+                value={messageBody}
+                onChange={e => setMessageBody(e.target.value)}
+                maxLength={3000}
+                required
+                rows={5}
+                placeholder="Write an announcement for students…"
+              />
+            </label>
+            <div className="form-actions">
+              <span>
+                <Users size={16} /> Recipients: {selectedStudents.length} selected students
+              </span>
+
+              <button
+                type="submit"
+                disabled={sending || selectedStudents.length === 0}
+              >
+                {sending ? 'Sending…' : 'Send announcement'}
+                <Send size={16} />
+              </button>
+            </div>
+          </form>
+        </section>}
+      </> : (
+        <>
+          <section className="student-welcome">
+            <div className="panel-heading">
+              <div>
+                <h2>My FRRO dates</h2>
+                <p>Keep your renewal and expiry information up to date.</p>
+              </div>
+              <div className="message-icon">
+                <CalendarDays size={20} />
+              </div>
+            </div>
+
+            <div className="stats-grid">
+              <Stat
+                label="Previous renewal"
+                value={dateLabel(record.previous_renewal_date)}
+                icon={<CalendarDays />}
+                hint="Your last renewal date"
+              />
+              <Stat
+                label="Next expiry"
+                value={dateLabel(record.next_expiry_date)}
+                icon={<Clock3 />}
+                hint={
+                  myDays === null
+                    ? 'Expiry date not set'
+                    : myDays < 0
+                      ? `${Math.abs(myDays)} days overdue`
+                      : `${myDays} days remaining`
+                }
+              />
+              <Stat
+                label="Next expiry"
+                value={dateLabel(record.next_expiry_date)}
+                icon={<Clock3 />}
+                hint={
+                  myDays === null
+                    ? 'Expiry date not set'
+                    : myDays < 0
+                      ? `${Math.abs(myDays)} days overdue`
+                      : `${myDays} days remaining`
+                }
+                tone={
+                  myDays !== null && myDays < 0
+                    ? 'danger'
+                    : myDays !== null && myDays <= 14
+                      ? 'danger'
+                      : myDays !== null && myDays < 60
+                        ? 'warning'
+                        : 'success'
+                }
+              />
+            </div>
+
+            <div className="panel">
+              <div className="panel-heading">
+                <div>
+                  <h2>Update FRRO dates</h2>
+                  <p>Enter the dates shown on your official documents.</p>
+                </div>
+                {!editingDates && (
+                  <button
+                    className="secondary-button"
+                    onClick={() => setEditingDates(true)}
+                  >
+                    Edit dates
+                  </button>
+                )}
+              </div>
+
+              {editingDates ? (
+
+                <form className="message-form" onSubmit={saveDates}>
+                  <label>
+                    Student name
+                    <input
+                      value={studentDetails.full_name}
+                      onChange={e =>
+                        setStudentDetails(prev => ({ ...prev, full_name: e.target.value }))
+                      }
+                      required
+                      placeholder="Full name"
+                    />
+                  </label>
+
+                  <label>
+                    Roll number
+                    <input
+                      value={studentDetails.roll_no}
+                      onChange={e =>
+                        setStudentDetails(prev => ({ ...prev, roll_no: e.target.value }))
+                      }
+                      required
+                      placeholder="University roll number"
+                    />
+                  </label>
+
+                  <label>
+                    Course
+                    <input
+                      value={studentDetails.course}
+                      onChange={e =>
+                        setStudentDetails(prev => ({ ...prev, course: e.target.value }))
+                      }
+                      required
+                      placeholder="e.g. B.Tech Computer Science"
+                    />
+                  </label>
+
+                  <label>
+                    Country
+                    <input
+                      value={studentDetails.country}
+                      onChange={e =>
+                        setStudentDetails(prev => ({ ...prev, country: e.target.value }))
+                      }
+                      required
+                      placeholder="Country of citizenship"
+                    />
+                  </label>
+
+                  <label>
+                    FRRO issue date
+                    <input
+                      type="date"
+                      value={record.frro_issue_date || ''}
+                      onChange={e =>
+                        setRecord(prev => ({ ...prev, frro_issue_date: e.target.value }))
+                      }
+                      required
+                    />
+                  </label>
+
+                  <label>
+                    FRRO expiry date
+                    <input
+                      type="date"
+                      value={record.next_expiry_date || ''}
+                      onChange={e =>
+                        setRecord(prev => ({ ...prev, next_expiry_date: e.target.value }))
+                      }
+                      required
+                    />
+                  </label>
+
+                  <label>
+                    Previous renewal date (optional)
+                    <input
+                      type="date"
+                      value={record.previous_renewal_date || ''}
+                      onChange={e =>
+                        setRecord(prev => ({
+                          ...prev,
+                          previous_renewal_date: e.target.value
+                        }))
+                      }
+                    />
+                  </label>
+
+                  <div className="form-actions">
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      onClick={() => {
+                        setEditingDates(false);
+                        loadProfileAndData();
+                      }}
+                    >
+                      Cancel
+                    </button>
+
+                    <button
+                      type="submit"
+                      className="primary-button"
+                      disabled={saving}
+                    >
+                      {saving ? 'Saving…' : 'Save details'}
+                    </button>
+                  </div>
+                </form>
+
+              ) : (
+                <p>
+                  {record.next_expiry_date
+                    ? `Your current expiry date is ${dateLabel(record.next_expiry_date)}.`
+                    : 'You have not entered your FRRO dates yet. Select Edit dates to add them.'}
+                </p>
+              )}
+            </div>
+          </section>
+
+          <section className="panel">
+            <div className="panel-heading">
+              <div>
+                <h2>Messages and announcements</h2>
+                <p>Updates from your student services administrator.</p>
+              </div>
+              <div className="message-icon">
+                <Bell size={20} />
+              </div>
+            </div>
+
+            {notifications.length ? (
+              <div className="notification-list">
+                {notifications.map(notification => (
+                  <article
+                    className="notification-item"
+                    key={notification.id}
+                  >
+                    <div>
+                      <h3>{notification.title}</h3>
+                      <p>{notification.body}</p>
+                      <span>
+                        {new Date(notification.created_at).toLocaleString('en-IN')}
+                      </span>
+                    </div>
+
+                    {!notification.read_at && (
+                      <button
+                        className="secondary-button"
+                        onClick={() => markRead(notification.id)}
+                      >
+                        Mark as read
+                      </button>
+                    )}
+                  </article>
+                ))}
+              </div>
+            ) : (
+              <p className="table-empty">No messages yet.</p>
+            )}
+          </section>
+        </>
+      )}
+
+      <footer className="page-footer">
+        <strong>MRU FRRO Tracker</strong>
+        <span>•</span>
+        Keep your dates accurate and follow official FRRO guidance.
+
+        <div className="app-signature">
+          <p>
+            App developed by <strong>Mr Blessed Chirovamayi</strong>
+          </p>
+          <p>Undergraduate Mechanical Engineer</p>
+          <p>Manav Rachna University</p>
+          <p>24/10/2026 @ 1500 hrs</p>
+        </div>
+      </footer>
+    </main>
+  </div>;
+}
