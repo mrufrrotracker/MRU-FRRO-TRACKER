@@ -17,6 +17,68 @@ const REMINDER_DAYS = [60, 45, 30, 21, 14, 10, 7, 3, 2, 1];
 const todayISO = () => new Date().toISOString().slice(0, 10);
 const dayDiff = (date) => date ? Math.ceil((Date.parse(`${date}T00:00:00Z`) - Date.parse(`${todayISO()}T00:00:00Z`)) / 86400000) : null;
 const dateLabel = (date) => date ? new Date(`${date}T12:00:00`).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Not set';
+const timestampLabel = (value) =>
+  value
+    ? new Date(value).toLocaleString('en-IN', {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true,
+    })
+    : 'Time unavailable';
+
+const statusDisplay = (status, reason) => {
+  if (status === 'action_required') {
+    if (reason === 'update_dates') {
+      return {
+        label: 'Action required — Update your FRRO new dates',
+        tone: 'danger',
+      };
+    }
+
+    if (reason === 'upload_correct_document') {
+      return {
+        label: 'Action required — Upload correct FRRO document',
+        tone: 'danger',
+      };
+    }
+
+    return {
+      label: 'Action required — Update your FRRO new dates',
+      tone: 'danger',
+    };
+  }
+
+  const statuses = {
+    in_progress: {
+      label: 'Submitted-under process',
+      tone: 'warning',
+    },
+    received: {
+      label: 'New FRRO received',
+      tone: 'success',
+    },
+    document_approved: {
+      label: 'Uploaded FRRO document approved',
+      tone: 'success',
+    },
+    document_rejected: {
+      label: 'Uploaded FRRO document rejected',
+      tone: 'danger',
+    },
+    rejected: {
+      label: 'Rejected',
+      tone: 'danger',
+    },
+  };
+
+  return statuses[status] || {
+    label: status || 'Status not set',
+    tone: 'neutral',
+  };
+};
 
 
 function statusFor(date) {
@@ -57,6 +119,7 @@ function renewalStatusFor(frro) {
     (expiryDate.getTime() - today.getTime()) / (24 * 60 * 60 * 1000)
   );
 
+
   // Keep "New FRRO received" visible for seven days
   // after the administrator confirms receipt.
   const receivedAt = frro?.renewal_received_at
@@ -64,7 +127,7 @@ function renewalStatusFor(frro) {
     : null;
 
   const receivedForSevenDays =
-    frro.renewal_status === 'received' &&
+    frro?.renewal_status === 'received' &&
     receivedAt !== null &&
     Number.isFinite(receivedAt) &&
     Date.now() - receivedAt >= 0 &&
@@ -78,6 +141,7 @@ function renewalStatusFor(frro) {
     };
   }
 
+
   // An expired FRRO takes priority after the seven-day period.
   if (daysRemaining < 0) {
     return {
@@ -90,7 +154,7 @@ function renewalStatusFor(frro) {
   // If a renewal application is underway, preserve that status.
   if (frro.renewal_status === 'in_progress') {
     return {
-      label: 'Application in progress',
+      label: 'Submitted-under process',
       tone: 'warning',
       key: 'in_progress'
     };
@@ -171,6 +235,8 @@ export default function App() {
   });
   const [students, setStudents] = useState([]);
   const [renewalHistory, setRenewalHistory] = useState([]);
+  const [statusHistory, setStatusHistory] = useState([]);
+  const [loadingStatusHistory, setLoadingStatusHistory] = useState(false);
 
   const [adminDocuments, setAdminDocuments] = useState([]);
   const [loadingAdminDocuments, setLoadingAdminDocuments] = useState(false);
@@ -190,6 +256,89 @@ export default function App() {
   const [tab, setTab] = useState('renewals');
 
   const flash = (text, type = 'success') => setNotice({ text, type });
+  const loadStatusHistory = useCallback(async () => {
+    if (!supabase || !session?.user?.id) return;
+
+    setLoadingStatusHistory(true);
+
+    try {
+      let query = supabase
+        .from('frro_status_history')
+        .select('id,user_id,status,reason,changed_by,changed_at')
+        .order('changed_at', { ascending: false })
+        .limit(200);
+
+      // Students can see only their own history.
+      // Verified admins can see the history permitted by the RLS policy.
+      if (
+        profile?.role !== 'admin' ||
+        profile?.verification_status !== 'verified'
+      ) {
+        query = query.eq('user_id', session.user.id);
+      }
+
+      const { data, error } = await query;
+
+      if (error) throw error;
+
+      const rows = data ?? [];
+      const userIds = [...new Set(rows.map(row => row.user_id))];
+
+      let profileMap = new Map();
+
+      if (userIds.length) {
+        const { data: people, error: peopleError } = await supabase
+          .from('student_profiles')
+          .select('user_id,full_name,email,roll_no')
+          .in('user_id', userIds);
+
+        if (peopleError) throw peopleError;
+
+        profileMap = new Map(
+          (people ?? []).map(person => [person.user_id, person])
+        );
+      }
+
+      setStatusHistory(
+        rows.map(row => ({
+          ...row,
+          student: profileMap.get(row.user_id) ?? null,
+        }))
+      );
+    } catch (error) {
+      flash(`Could not load status history: ${error.message}`, 'error');
+    } finally {
+      setLoadingStatusHistory(false);
+    }
+  }, [
+    session?.user?.id,
+    profile?.role,
+    profile?.verification_status,
+  ]);
+
+  async function saveStatusChange(userId, status, reason = null) {
+    if (!supabase || !session?.user?.id || !userId) {
+      throw new Error('Your session or student ID is missing.');
+    }
+
+    const sentAt = new Date();
+    const expiresAt = new Date(
+      sentAt.getTime() + 7 * 24 * 60 * 60 * 1000
+    );
+
+    const { error } = await supabase
+      .from('frro_status_history')
+      .insert({
+        user_id: userId,
+        status,
+        reason,
+        changed_by: session.user.id,
+        notification_sent_at: sentAt.toISOString(),
+        notification_expires_at: expiresAt.toISOString(),
+      });
+
+    if (error) throw error;
+  }
 
   useEffect(() => {
     if (!supabase) return;
@@ -341,7 +490,7 @@ export default function App() {
     const { data, error } = await supabase
       .from('frro_documents')
       .select(
-        'id, storage_path, original_file_name, content_type, file_size, uploaded_at'
+        'id, storage_path, original_file_name, content_type, file_size, uploaded_at, review_status, review_reason, reviewed_at'
       )
       .eq('user_id', session.user.id)
       .order('uploaded_at', { ascending: false });
@@ -352,7 +501,26 @@ export default function App() {
     }
 
     setFrroDocuments(data ?? []);
-  }, [session?.user?.id]);
+  }, [session?.user?.id, flash]);
+
+  const viewFrroDocument = async (file) => {
+    if (!file?.storage_path) {
+      flash('Document file path is missing.', 'error');
+      return;
+    }
+
+    const { data, error } = await supabase.storage
+      .from('FRRO Document')
+      .createSignedUrl(file.storage_path, 60);
+
+    if (error) {
+      flash(`Could not open document: ${error.message}`, 'error');
+      return;
+    }
+
+    window.open(data.signedUrl, '_blank', 'noopener,noreferrer');
+  };
+
 
   const handleDocumentUpload = async (event) => {
     event.preventDefault();
@@ -429,6 +597,9 @@ export default function App() {
 
 
   useEffect(() => { loadProfileAndData(); }, [loadProfileAndData]);
+  useEffect(() => {
+    loadStatusHistory();
+  }, [loadStatusHistory]);
 
   useEffect(() => {
     loadFrroDocuments();
@@ -530,7 +701,7 @@ export default function App() {
       const { data: documents, error } = await supabase
         .from('frro_documents')
         .select(
-          'id, user_id, storage_path, original_file_name, content_type, file_size, uploaded_at'
+          'id, user_id, storage_path, original_file_name,content_type, file_size, uploaded_at,review_status, review_reason, reviewed_by, reviewed_at'
         )
         .order('uploaded_at', { ascending: false });
 
@@ -619,9 +790,13 @@ export default function App() {
     }
   }
 
+
   async function confirmNewFrroReceived(student) {
     if (!supabase || !session?.user || !isAdmin) {
-      return flash('Only a verified administrator can confirm receipt.', 'error');
+      return flash(
+        'Only a verified administrator can confirm receipt.',
+        'error'
+      );
     }
 
     if (!student?.user_id) {
@@ -643,12 +818,110 @@ export default function App() {
 
       if (error) throw error;
 
-      flash('New FRRO receipt confirmed. The status will show for 7 days.');
+      await saveStatusChange(
+        student.user_id,
+        'received'
+      );
 
+      flash(
+        'New FRRO receipt confirmed. The status will show for 7 days.'
+      );
+
+      await loadStatusHistory();
       await loadStudents();
       await loadAdminDocuments();
     } catch (e) {
-      flash(e.message || 'Could not confirm the new FRRO.', 'error');
+      flash(
+        e.message || 'Could not confirm the new FRRO.',
+        'error'
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
+
+
+  async function setAdminStudentStatus(student, status, reason = null) {
+    if (
+      !supabase ||
+      !session?.user ||
+      !isAdmin
+    ) {
+      return flash(
+        'Only a verified administrator can change student status.',
+        'error'
+      );
+    }
+
+    if (!student?.user_id) {
+      return flash('Student user ID is missing.', 'error');
+    }
+
+    setSaving(true);
+
+    try {
+      await saveStatusChange(
+        student.user_id,
+        status,
+        reason
+      );
+
+      flash('Student status updated successfully.');
+
+      await loadStatusHistory();
+      await loadStudents();
+      await loadAdminDocuments();
+    } catch (error) {
+      flash(
+        error.message || 'Could not update student status.',
+        'error'
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function reviewFrroDocument(doc, reviewStatus, reason = null) {
+    if (!supabase || !session?.user || !isAdmin) {
+      return flash(
+        'Only a verified administrator can review documents.',
+        'error'
+      );
+    }
+
+    if (!doc?.id) {
+      return flash('Document ID is missing.', 'error');
+    }
+
+    const allowedStatuses = [
+      'approved',
+      'rejected',
+      'action_required',
+    ];
+
+    if (!allowedStatuses.includes(reviewStatus)) {
+      return flash('Invalid document review status.', 'error');
+    }
+
+    setSaving(true);
+
+    try {
+      const { error } = await supabase
+        .from('frro_documents')
+        .update({
+          review_status: reviewStatus,
+          review_reason: reason,
+          reviewed_by: session.user.id,
+          reviewed_at: new Date().toISOString(),
+        })
+        .eq('id', doc.id);
+
+      if (error) throw error;
+
+      flash('Document review status saved successfully.');
+      await loadAdminDocuments();
+    } catch (error) {
+      flash(error.message || 'Could not save document review.', 'error');
     } finally {
       setSaving(false);
     }
@@ -764,7 +1037,7 @@ export default function App() {
     }
   }
 
-  async function markApplicationInProgress() {
+  async function markSubmittedUnderProcess() {
     if (!supabase || !session?.user) return;
 
     if (!record.next_expiry_date) {
@@ -794,11 +1067,20 @@ export default function App() {
 
       if (error) throw error;
 
+      // Record the status change and its timestamp in the history table.
+      await saveStatusChange(
+        session.user.id,
+        'in_progress'
+      );
+
       setRecord(prev => ({
         ...prev,
         renewal_status: 'in_progress',
         application_applied_at: submittedAt
       }));
+
+      // Refresh status history for the student and admin views.
+      await loadStatusHistory();
 
       flash(
         'Application submission recorded. Student services can now see your status.'
@@ -812,6 +1094,7 @@ export default function App() {
       setSaving(false);
     }
   }
+
 
 
   async function saveDates(event) {
@@ -1436,7 +1719,7 @@ export default function App() {
                     <option value="urgent">Urgent — not applied</option>
                     <option value="not_applied">Not yet applied</option>
                     <option value="in_progress">
-                      Application in progress
+                      Submitted-under process
                     </option>
                     <option value="received">New FRRO received</option>
                     <option value="valid">FRRO is valid</option>
@@ -1507,7 +1790,21 @@ export default function App() {
                     <tbody>
                       {filteredStudents.map((s) => {
                         const days = dayDiff(s.frro?.next_expiry_date);
-                        const status = renewalStatusFor(s.frro);
+                        const latestStatus = statusHistory.find(
+                          (item) => item.user_id === s.user_id
+                        );
+
+                        const historyStatuses = [
+                          'action_required',
+                          'document_approved',
+                          'document_rejected',
+                          'rejected',
+                        ];
+
+                        const status =
+                          latestStatus && historyStatuses.includes(latestStatus.status)
+                            ? statusDisplay(latestStatus.status, latestStatus.reason)
+                            : renewalStatusFor(s.frro);
 
                         return (
                           <tr key={s.user_id}>
@@ -1719,7 +2016,29 @@ export default function App() {
 
                           <td>{doc.student?.roll_no || 'Not entered'}</td>
 
-                          <td>{doc.original_file_name}</td>
+
+                          <td>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                              <strong>{doc.original_file_name}</strong>
+
+                              <span
+                                className={`status-pill ${doc.review_status === 'approved'
+                                  ? 'success'
+                                  : doc.review_status === 'rejected' ||
+                                    doc.review_status === 'action_required'
+                                    ? 'danger'
+                                    : 'warning'
+                                  }`}
+                              >
+                                {doc.review_status || 'pending'}
+                              </span>
+
+                              {doc.review_reason && (
+                                <span className="muted">{doc.review_reason}</span>
+                              )}
+                            </div>
+                          </td>
+
 
                           <td>{doc.content_type || 'Unknown'}</td>
 
@@ -1743,6 +2062,7 @@ export default function App() {
                                 gap: '8px'
                               }}
                             >
+
                               <button
                                 type="button"
                                 className="secondary-button"
@@ -1750,6 +2070,77 @@ export default function App() {
                               >
                                 <ExternalLink size={16} />
                                 View document
+                              </button>
+
+                              <button
+                                type="button"
+                                className="secondary-button"
+                                disabled={saving}
+                                onClick={() => reviewFrroDocument(doc, 'approved')}
+                              >
+                                <CheckCircle2 size={16} />
+                                Approve FRRO document
+                              </button>
+
+                              <button
+                                type="button"
+                                className="secondary-button"
+                                disabled={saving}
+                                onClick={() =>
+                                  reviewFrroDocument(
+                                    doc,
+                                    'rejected',
+                                    'Please upload a valid FRRO document.'
+                                  )
+                                }
+                              >
+                                <XCircle size={16} />
+                                Reject FRRO document
+                              </button>
+
+                              <button
+                                type="button"
+                                className="secondary-button"
+                                disabled={saving}
+                                onClick={() =>
+                                  reviewFrroDocument(
+                                    doc,
+                                    'action_required',
+                                    'Please upload the correct FRRO document.'
+                                  )
+                                }
+                              >
+                                Action required: correct document
+                              </button>
+
+                              <button
+                                type="button"
+                                className="secondary-button"
+                                disabled={saving}
+                                onClick={() =>
+                                  setAdminStudentStatus(
+                                    { user_id: doc.user_id },
+                                    'action_required',
+                                    'update_dates'
+                                  )
+                                }
+                              >
+                                Action required: update dates
+                              </button>
+
+                              <button
+                                type="button"
+                                className="secondary-button"
+                                disabled={saving}
+                                onClick={() =>
+                                  setAdminStudentStatus(
+                                    { user_id: doc.user_id },
+                                    'rejected'
+                                  )
+                                }
+                              >
+                                <XCircle size={16} />
+                                Reject application
                               </button>
 
                               {renewalStatusFor(doc.frro).key !== 'received' && (
@@ -1953,40 +2344,82 @@ export default function App() {
                     </button>
                   </form>
 
-                  {frroDocuments.length > 0 && (
-                    <div className="frro-document-list">
-                      <h3>Uploaded documents</h3>
+                  <div className="frro-document-list">
+                    <h3>Uploaded documents</h3>
 
-                      {frroDocuments.map(file => (
+                    {frroDocuments.length === 0 ? (
+                      <p>You haven't uploaded any documents yet.</p>
+                    ) : (
+
+                      frroDocuments.map(file => (
                         <div className="frro-document-item" key={file.id}>
-                          <FileText size={18} />
-                          <span>{file.original_file_name}</span>
-                          <small>
-                            {file.uploaded_at
-                              ? new Date(file.uploaded_at).toLocaleDateString('en-IN')
-                              : 'Date unavailable'}
-                          </small>
+                          <FileText size={22} />
+
+                          <div className="document-details">
+                            <strong>{file.original_file_name}</strong>
+
+                            <small>
+                              Uploaded:{' '}
+                              {file.uploaded_at
+                                ? new Date(file.uploaded_at).toLocaleDateString('en-IN')
+                                : 'Date unavailable'}
+                            </small>
+
+                            <span
+                              className={`status-pill ${file.review_status === 'approved'
+                                ? 'success'
+                                : ['rejected', 'action_required'].includes(file.review_status)
+                                  ? 'danger'
+                                  : 'warning'
+                                }`}
+                            >
+                              {(file.review_status || 'pending').replace('_', ' ')}
+                            </span>
+
+                            {file.review_reason && (
+                              <p className="document-review-reason">
+                                Administrator feedback: {file.review_reason}
+                              </p>
+                            )}
+                          </div>
+
+                          <button
+                            type="button"
+                            className="secondary-button"
+                            onClick={() => viewFrroDocument(file)}
+                          >
+                            View document
+                          </button>
                         </div>
-                      ))}
-                    </div>
-                  )}
+                      ))
+
+                    )}
+                  </div>
                 </div>
+
 
                 {/* Card 3: Renewal application */}
                 <div className="panel student-dashboard-card">
+
                   <div className="panel-heading">
                     <div>
                       <h2>FRRO renewal application</h2>
                       <p>
-                        Update your status when you submit your renewal application.
+                        Track your application status and status updates.
                       </p>
                     </div>
                   </div>
 
-
                   <p>
                     <strong>Status: </strong>
-                    {renewalStatusFor(record).label}
+                    {statusDisplay(
+                      statusHistory.find(
+                        item => item.user_id === session.user.id
+                      )?.status || renewalStatusFor(record).key,
+                      statusHistory.find(
+                        item => item.user_id === session.user.id
+                      )?.reason
+                    ).label}
                   </p>
 
                   {record.renewal_status !== 'in_progress' &&
@@ -1994,7 +2427,7 @@ export default function App() {
                       <button
                         type="button"
                         className="primary-button"
-                        onClick={markApplicationInProgress}
+                        onClick={markSubmittedUnderProcess}
                         disabled={
                           saving ||
                           !record.next_expiry_date ||
@@ -2009,12 +2442,46 @@ export default function App() {
 
                   {record.renewal_status === 'in_progress' && (
                     <p>
-                      Application in progress. When you receive your new FRRO,
-                      upload the renewed document and update the issue and expiry
-                      dates below.
+                      Your application has been submitted and is being processed.
+                      When you receive your new FRRO, upload the renewed document
+                      and update the issue and expiry dates below.
                     </p>
                   )}
+
+                  <hr />
+
+                  <h3>Status history</h3>
+
+                  {loadingStatusHistory ? (
+                    <p>Loading status history…</p>
+                  ) : statusHistory.filter(
+                    item => item.user_id === session.user.id
+                  ).length === 0 ? (
+                    <p>No status updates recorded yet.</p>
+                  ) : (
+                    <div className="status-timeline">
+                      {statusHistory
+                        .filter(item => item.user_id === session.user.id)
+                        .map(item => {
+                          const display = statusDisplay(
+                            item.status,
+                            item.reason
+                          );
+
+                          return (
+                            <div
+                              className={`status-timeline-item status-${display.tone}`}
+                              key={item.id}
+                            >
+                              <strong>{display.label}</strong>
+                              <p>{timestampLabel(item.changed_at)}</p>
+                            </div>
+                          );
+                        })}
+                    </div>
+                  )}
                 </div>
+
 
                 {/* Card 4: Update dates and official portal */}
                 <div className="panel student-dashboard-card">
