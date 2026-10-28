@@ -1,4 +1,3 @@
-
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import {
@@ -14,6 +13,7 @@ import {
   ExternalLink,
   FileText,
   History,
+  LayoutDashboard,
   LogOut,
   Mail,
   MessageSquareText,
@@ -25,6 +25,7 @@ import {
   Users,
   XCircle,
 } from 'lucide-react';
+
 
 import { supabase, supabaseConfigured } from './supabase';
 
@@ -274,6 +275,7 @@ export default function App() {
   const [messageBody, setMessageBody] = useState('');
   const [sending, setSending] = useState(false);
   const [tab, setTab] = useState('renewals');
+  const [studentSection, setStudentSection] = useState('dashboard');
 
   const flash = useCallback((text, type = 'success') => {
     setNotice({ text, type });
@@ -1637,6 +1639,14 @@ export default function App() {
 
   const myDays = dayDiff(record.next_expiry_date);
 
+  // Add this inside your App component, before return
+  const navigateStudentSection = (sectionId) => {
+    document.getElementById(sectionId)?.scrollIntoView({
+      behavior: 'smooth',
+      block: 'start',
+    });
+  };
+
   return (
     <div className="app-frame">
 
@@ -1654,6 +1664,7 @@ export default function App() {
         {isAdmin ? (
           <>
             <button
+              type="button"
               className={`nav-item ${tab === 'renewals' ? 'active' : ''}`}
               onClick={() => setTab('renewals')}
             >
@@ -1662,6 +1673,7 @@ export default function App() {
             </button>
 
             <button
+              type="button"
               className={`nav-item ${tab === 'history' ? 'active' : ''}`}
               onClick={() => setTab('history')}
             >
@@ -1670,6 +1682,7 @@ export default function App() {
             </button>
 
             <button
+              type="button"
               className={`nav-item ${tab === 'documents' ? 'active' : ''}`}
               onClick={() => setTab('documents')}
             >
@@ -1678,6 +1691,7 @@ export default function App() {
             </button>
 
             <button
+              type="button"
               className={`nav-item ${tab === 'messages' ? 'active' : ''}`}
               onClick={() => setTab('messages')}
             >
@@ -1686,10 +1700,61 @@ export default function App() {
             </button>
           </>
         ) : (
-          <div className="nav-item active">
-            <CalendarDays size={18} />
-            My FRRO dates
-          </div>
+          <>
+            <button
+              type="button"
+              className={`nav-item ${studentSection === 'dashboard' ? 'active' : ''}`}
+              onClick={() => setStudentSection('dashboard')}
+            >
+              <LayoutDashboard size={18} />
+              Dashboard
+            </button>
+
+            <button
+              type="button"
+              className={`nav-item ${studentSection === 'frro-dates' ? 'active' : ''}`}
+              onClick={() => setStudentSection('frro-dates')}
+            >
+              <CalendarDays size={18} />
+              My FRRO Dates
+            </button>
+
+            <button
+              type="button"
+              className={`nav-item ${studentSection === 'documents' ? 'active' : ''}`}
+              onClick={() => setStudentSection('documents')}
+            >
+              <FileText size={18} />
+              Documents
+            </button>
+
+            <button
+              type="button"
+              className={`nav-item ${studentSection === 'renewal' ? 'active' : ''}`}
+              onClick={() => setStudentSection('renewal')}
+            >
+              <Clock3 size={18} />
+              Renewal Application
+            </button>
+
+            <button
+              type="button"
+              className={`nav-item ${studentSection === 'messages' ? 'active' : ''}`}
+              onClick={() => setStudentSection('messages')}
+            >
+              <MessageSquareText size={18} />
+              Messages
+            </button>
+
+            <button
+              type="button"
+              className={`nav-item ${studentSection === 'support' ? 'active' : ''}`}
+              onClick={() => setStudentSection('support')}
+            >
+              <Mail size={18} />
+              Support
+            </button>
+          </>
         )}
 
         <div className="sidebar-bottom">
@@ -1699,18 +1764,26 @@ export default function App() {
                 .slice(0, 1)
                 .toUpperCase()}
             </div>
+
             <div>
               <strong>{profile?.full_name || 'Account'}</strong>
-              <span>{isAdmin ? 'Administrator' : 'Student account'}</span>
+              <span>
+                {isAdmin ? 'Administrator' : 'Student account'}
+              </span>
             </div>
           </div>
 
-          <button className="nav-item signout" onClick={signOut}>
+          <button
+            type="button"
+            className="nav-item signout"
+            onClick={signOut}
+          >
             <LogOut size={18} />
             Sign out
           </button>
         </div>
       </aside>
+
 
       <main className="main-area">
         <header className="page-header">
@@ -2414,560 +2487,573 @@ export default function App() {
           </>
         ) : (
           <>
-            <section className="student-welcome">
-              <div className="panel-heading">
-                <div>
-                  <h2>My FRRO dates</h2>
-                  <p>
-                    Keep your renewal and expiry information up to date.
-                  </p>
-                </div>
-              </div>
 
-              <div className="message-icon">
-                <CalendarDays size={20} />
-              </div>
-
-
-              <div className="student-dashboard-grid">
-                {/* Card 1: Next expiry */}
-                <div className="panel student-dashboard-card">
-                  <Stat
-                    label="Next expiry"
-                    value={dateLabel(record.next_expiry_date)}
-                    icon={<Clock3 />}
-                    hint={
-                      myDays === null
-                        ? 'Expiry date not set'
-                        : myDays < 0
-                          ? `${Math.abs(myDays)} days overdue`
-                          : `${myDays} days remaining`
-                    }
-                    tone={
-                      myDays !== null && myDays < 0
-                        ? 'danger'
-                        : myDays !== null && myDays <= 14
-                          ? 'danger'
-                          : myDays !== null && myDays < 60
-                            ? 'warning'
-                            : 'success'
-                    }
-                  />
-                </div>
-
-                {/* Card 2: Upload FRRO document */}
-                <div className="panel student-dashboard-card">
-                  <div className="panel-heading">
-                    <div>
-                      <h2>Upload new FRRO document</h2>
-                      <p>Upload your renewed FRRO document for your records.</p>
-                    </div>
-                    <Upload size={22} />
+            {studentSection === 'dashboard' && (
+              <section className="student-welcome" id="student-dashboard">
+                <div className="panel-heading">
+                  <div>
+                    <h2 style={{ color: '#FFFF00' }}>Dashboard</h2>
+                    <p style={{ color: '#FFFF00' }}>
+                      Welcome to your MRU FRRO Tracker.
+                    </p>
                   </div>
+                </div>
 
-                  <form onSubmit={handleDocumentUpload}>
-                    <label htmlFor="frro-document-file">
-                      Select document (PDF, JPG, or PNG; maximum 50 KB)
-                    </label>
+                <div className="message-icon">
+                  <CalendarDays size={20} />
+                </div>
 
-                    <input
-                      id="frro-document-file"
-                      type="file"
-                      accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png"
-                      onChange={event =>
-                        setSelectedDocument(event.target.files?.[0] ?? null)
+                <div className="student-dashboard-grid">
+                  <div className="panel student-dashboard-card">
+                    <Stat
+                      label="Next expiry"
+                      value={dateLabel(record.next_expiry_date)}
+                      icon={<Clock3 />}
+                      hint={
+                        myDays === null
+                          ? 'Expiry date not set'
+                          : myDays < 0
+                            ? `${Math.abs(myDays)} days overdue`
+                            : `${myDays} days remaining`
                       }
-                      disabled={uploadingDocument}
+                      tone={
+                        myDays !== null && myDays < 0
+                          ? 'danger'
+                          : myDays !== null && myDays <= 14
+                            ? 'danger'
+                            : myDays !== null && myDays < 60
+                              ? 'warning'
+                              : 'success'
+                      }
                     />
-
-                    {selectedDocument && (
-                      <p className="upload-selected-file">
-                        Selected: {selectedDocument.name}
-                      </p>
-                    )}
-
-                    <button
-                      type="submit"
-                      disabled={uploadingDocument || !selectedDocument}
-                    >
-                      {uploadingDocument
-                        ? 'Uploading…'
-                        : 'Upload FRRO document'}
-                    </button>
-                  </form>
-
-                  <div className="frro-document-list">
-                    <h3>Uploaded documents</h3>
-
-                    {frroDocuments.length === 0 ? (
-                      <p>You haven't uploaded any documents yet.</p>
-                    ) : (
-
-                      frroDocuments.map(file => (
-                        <div className="frro-document-item" key={file.id}>
-                          <FileText size={22} />
-
-                          <div className="document-details">
-                            <strong>{file.original_file_name}</strong>
-
-                            <small>
-                              Uploaded:{' '}
-                              {file.uploaded_at
-                                ? new Date(file.uploaded_at).toLocaleDateString('en-IN')
-                                : 'Date unavailable'}
-                            </small>
-
-                            <span
-                              className={`status-pill ${file.review_status === 'approved'
-                                ? 'success'
-                                : ['rejected', 'action_required'].includes(file.review_status)
-                                  ? 'danger'
-                                  : 'warning'
-                                }`}
-                            >
-                              {(file.review_status || 'pending').replace('_', ' ')}
-                            </span>
-
-                            {file.review_reason && (
-                              <p className="document-review-reason">
-                                Administrator feedback: {file.review_reason}
-                              </p>
-                            )}
-                          </div>
-
-                          <button
-                            type="button"
-                            className="secondary-button"
-                            onClick={() => viewFrroDocument(file)}
-                          >
-                            View document
-                          </button>
-                        </div>
-                      ))
-
-                    )}
                   </div>
                 </div>
+              </section>
+            )}
 
-
-                {/* Card 3: Renewal application */}
-                <div className="panel student-dashboard-card">
-
-                  <div className="panel-heading">
-                    <div>
-                      <h2>FRRO renewal application</h2>
-                      <p>
-                        Track your application status and status updates.
-                      </p>
-                    </div>
+            {studentSection === 'documents' && (
+              <section className="panel student-dashboard-card" id="student-documents">
+                <div className="panel-heading">
+                  <div>
+                    <h2>Upload new FRRO document</h2>
+                    <p>Upload your renewed FRRO document for your records.</p>
                   </div>
+                  <Upload size={22} />
+                </div>
 
+                <form onSubmit={handleDocumentUpload}>
+                  <label htmlFor="frro-document-file">
+                    Select document (PDF, JPG, or PNG; maximum 50 KB)
+                  </label>
 
-                  {(() => {
-                    const latestStatus = statusHistory.find(
-                      item => item.user_id === session.user.id
-                    );
+                  <input
+                    id="frro-document-file"
+                    type="file"
+                    accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png"
+                    onChange={event =>
+                      setSelectedDocument(event.target.files?.[0] ?? null)
+                    }
+                    disabled={uploadingDocument}
+                  />
 
-                    const isActionRequired =
-                      latestStatus?.status === 'action_required';
-
-                    const expiresAt = latestStatus?.notification_expires_at
-                      ? new Date(latestStatus.notification_expires_at).getTime()
-                      : null;
-
-                    const notificationIsActive =
-                      expiresAt !== null &&
-                      Number.isFinite(expiresAt) &&
-                      Date.now() < expiresAt;
-
-                    const shouldShowHistoryStatus =
-                      latestStatus &&
-                      (isActionRequired || notificationIsActive);
-
-                    const currentStatus = shouldShowHistoryStatus
-                      ? statusDisplay(latestStatus.status, latestStatus.reason)
-                      : renewalStatusFor(record);
-
-                    return (
-                      <p>
-                        <strong>Status: </strong>
-                        <span className={`status-pill ${currentStatus.tone}`}>
-                          {currentStatus.label}
-                        </span>
-                      </p>
-                    );
-                  })()}
-
-
-                  {record.renewal_status !== 'in_progress' &&
-                    renewalStatusFor(record).key !== 'received' && (
-                      <button
-                        type="button"
-                        className="primary-button"
-                        onClick={markSubmittedUnderProcess}
-                        disabled={
-                          saving ||
-                          !record.next_expiry_date ||
-                          myDays === null
-                        }
-                      >
-                        {saving
-                          ? 'Updating…'
-                          : 'I have submitted my application'}
-                      </button>
-                    )}
-
-                  {record.renewal_status === 'in_progress' && (
-                    <p>
-                      Your application has been submitted and is being processed.
-                      When you receive your new FRRO, upload the renewed document
-                      and update the issue and expiry dates below.
+                  {selectedDocument && (
+                    <p className="upload-selected-file">
+                      Selected: {selectedDocument.name}
                     </p>
                   )}
 
-                  <hr />
+                  <button
+                    type="submit"
+                    disabled={uploadingDocument || !selectedDocument}
+                  >
+                    {uploadingDocument
+                      ? 'Uploading…'
+                      : 'Upload FRRO document'}
+                  </button>
+                </form>
 
-                  <h3>Status history</h3>
+                <div className="frro-document-list">
+                  <h3>Uploaded documents</h3>
 
-                  {loadingStatusHistory ? (
-                    <p>Loading status history…</p>
-                  ) : statusHistory.filter(
-                    item => item.user_id === session.user.id
-                  ).length === 0 ? (
-                    <p>No status updates recorded yet.</p>
+                  {frroDocuments.length === 0 ? (
+                    <p>You haven't uploaded any documents yet.</p>
                   ) : (
-                    <div className="status-timeline">
-                      {statusHistory
-                        .filter(item => item.user_id === session.user.id)
-                        .map(item => {
-                          const display = statusDisplay(
-                            item.status,
-                            item.reason
-                          );
+                    frroDocuments.map(file => (
+                      <div className="frro-document-item" key={file.id}>
+                        <FileText size={22} />
 
-                          return (
-                            <div
-                              className={`status-timeline-item status-${display.tone}`}
-                              key={item.id}
-                            >
-                              <strong>{display.label}</strong>
-                              <p>{timestampLabel(item.changed_at)}</p>
-                            </div>
-                          );
-                        })}
-                    </div>
+                        <div className="document-details">
+                          <strong>{file.original_file_name}</strong>
+
+                          <small>
+                            Uploaded:{' '}
+                            {file.uploaded_at
+                              ? new Date(file.uploaded_at).toLocaleDateString('en-IN')
+                              : 'Date unavailable'}
+                          </small>
+
+                          <span
+                            className={`status-pill ${file.review_status === 'approved'
+                              ? 'success'
+                              : ['rejected', 'action_required'].includes(
+                                file.review_status
+                              )
+                                ? 'danger'
+                                : 'warning'
+                              }`}
+                          >
+                            {(file.review_status || 'pending').replace('_', ' ')}
+                          </span>
+
+                          {file.review_reason && (
+                            <p className="document-review-reason">
+                              Administrator feedback: {file.review_reason}
+                            </p>
+                          )}
+                        </div>
+
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          onClick={() => viewFrroDocument(file)}
+                        >
+                          View document
+                        </button>
+                      </div>
+                    ))
                   )}
                 </div>
+              </section>
+            )}
 
-
-                {/* Card 4: Update dates and official portal */}
-                <div className="panel student-dashboard-card">
-                  <div className="panel-heading">
-                    <div>
-                      <h2>Update FRRO dates</h2>
-                      <p>Enter the dates shown on your official documents.</p>
-                    </div>
+            {studentSection === 'renewal' && (
+              <section className="panel student-dashboard-card" id="student-renewal">
+                <div className="panel-heading">
+                  <div>
+                    <h2>FRRO renewal application</h2>
+                    <p>Track your application status and status updates.</p>
                   </div>
+                </div>
 
+                {(() => {
+                  const latestStatus = statusHistory.find(
+                    item => item.user_id === session.user.id
+                  );
+
+                  const isActionRequired =
+                    latestStatus?.status === 'action_required';
+
+                  const expiresAt = latestStatus?.notification_expires_at
+                    ? new Date(latestStatus.notification_expires_at).getTime()
+                    : null;
+
+                  const notificationIsActive =
+                    expiresAt !== null &&
+                    Number.isFinite(expiresAt) &&
+                    Date.now() < expiresAt;
+
+                  const shouldShowHistoryStatus =
+                    latestStatus &&
+                    (isActionRequired || notificationIsActive);
+
+                  const currentStatus = shouldShowHistoryStatus
+                    ? statusDisplay(latestStatus.status, latestStatus.reason)
+                    : renewalStatusFor(record);
+
+                  return (
+                    <p>
+                      <strong>Status: </strong>
+                      <span className={`status-pill ${currentStatus.tone}`}>
+                        {currentStatus.label}
+                      </span>
+                    </p>
+                  );
+                })()}
+
+                {record.renewal_status !== 'in_progress' &&
+                  renewalStatusFor(record).key !== 'received' && (
+                    <button
+                      type="button"
+                      className="primary-button"
+                      onClick={markSubmittedUnderProcess}
+                      disabled={
+                        saving ||
+                        !record.next_expiry_date ||
+                        myDays === null
+                      }
+                    >
+                      {saving
+                        ? 'Updating…'
+                        : 'I have submitted my application'}
+                    </button>
+                  )}
+
+                {record.renewal_status === 'in_progress' && (
+                  <p>
+                    Your application has been submitted and is being processed.
+                    When you receive your new FRRO, upload the renewed document
+                    and update the issue and expiry dates under My FRRO Dates.
+                  </p>
+                )}
+
+                <hr />
+
+                <h3>Status history</h3>
+
+                {loadingStatusHistory ? (
+                  <p>Loading status history…</p>
+                ) : statusHistory.filter(
+                  item => item.user_id === session.user.id
+                ).length === 0 ? (
+                  <p>No status updates recorded yet.</p>
+                ) : (
+                  <div className="status-timeline">
+                    {statusHistory
+                      .filter(item => item.user_id === session.user.id)
+                      .map(item => {
+                        const display = statusDisplay(
+                          item.status,
+                          item.reason
+                        );
+
+                        return (
+                          <div
+                            className={`status-timeline-item status-${display.tone}`}
+                            key={item.id}
+                          >
+                            <strong>{display.label}</strong>
+                            <p>{timestampLabel(item.changed_at)}</p>
+                          </div>
+                        );
+                      })}
+                  </div>
+                )}
+              </section>
+            )}
+
+
+
+            {studentSection === 'frro-dates' && (
+              <section className="panel student-dashboard-card" id="student-frro-dates">
+                <div className="panel-heading">
+                  <div>
+                    <h2>My FRRO Dates</h2>
+                    <p>Enter the dates shown on your official documents.</p>
+                  </div>
+                  <CalendarDays size={22} />
+                </div>
+                <a
+                  href="https://indianfrro.gov.in/efrro/sessions/user-login"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="primary-button"
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    textDecoration: 'none',
+                    backgroundColor: '#228B22',
+                    color: '#FFFFFF',
+                    border: '1px solid #228B22',
+                  }}
+                >
+                  Open Official FRRO Portal
+                  <ExternalLink size={16} />
+                </a>
+
+                {!editingDates && (
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    style={{
+                      backgroundColor: '#C0392B',
+                      color: '#FFFFFF',
+                      borderColor: '#C0392B',
+                    }}
+                    onClick={() => setEditingDates(true)}
+                  >
+                    Update FRRO
+                  </button>
+                )}
+
+                {editingDates ? (
+                  <form className="message-form" onSubmit={saveDates}>
+                    <label>
+                      Student name
+                      <input
+                        value={studentDetails.full_name}
+                        onChange={e =>
+                          setStudentDetails(prev => ({
+                            ...prev,
+                            full_name: e.target.value
+                          }))
+                        }
+                        required
+                        placeholder="Full name"
+                      />
+                    </label>
+
+                    <label>
+                      Roll number
+                      <input
+                        value={studentDetails.roll_no}
+                        onChange={e =>
+                          setStudentDetails(prev => ({
+                            ...prev,
+                            roll_no: e.target.value
+                          }))
+                        }
+                        required
+                        placeholder="University roll number"
+                      />
+                    </label>
+
+                    <label>
+                      Course
+                      <input
+                        value={studentDetails.course}
+                        onChange={e =>
+                          setStudentDetails(prev => ({
+                            ...prev,
+                            course: e.target.value
+                          }))
+                        }
+                        required
+                        placeholder="e.g. B.Tech Computer Science"
+                      />
+                    </label>
+
+                    <label>
+                      Country
+                      <input
+                        value={studentDetails.country}
+                        onChange={e =>
+                          setStudentDetails(prev => ({
+                            ...prev,
+                            country: e.target.value
+                          }))
+                        }
+                        required
+                        placeholder="Country of citizenship"
+                      />
+                    </label>
+
+                    <label>
+                      FRRO issue date
+                      <input
+                        type="date"
+                        value={record.frro_issue_date || ''}
+                        onChange={e =>
+                          setRecord(prev => ({
+                            ...prev,
+                            frro_issue_date: e.target.value
+                          }))
+                        }
+                        required
+                      />
+                    </label>
+
+                    <label>
+                      FRRO expiry date
+                      <input
+                        type="date"
+                        value={record.next_expiry_date || ''}
+                        onChange={e =>
+                          setRecord(prev => ({
+                            ...prev,
+                            next_expiry_date: e.target.value
+                          }))
+                        }
+                        required
+                      />
+                    </label>
+
+                    <div className="form-actions">
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        onClick={() => {
+                          setEditingDates(false);
+                          loadProfileAndData();
+                        }}
+                      >
+                        Cancel
+                      </button>
+
+                      <button
+                        type="submit"
+                        className="primary-button"
+                        disabled={saving}
+                      >
+                        {saving ? 'Saving…' : 'Save details'}
+                      </button>
+                    </div>
+                  </form>
+                ) : (
+                  <p>
+                    {record.next_expiry_date
+                      ? `Your current expiry date is ${dateLabel(record.next_expiry_date)}.`
+                      : 'You have not entered your FRRO dates yet.'}
+                  </p>
+                )}
+              </section>
+            )}
+            {/* Email Support */}
+            {studentSection === 'support' && (
+              <section className="panel" id="student-support">
+                <div className="panel-heading">
+                  <div>
+                    <h2>Need help?</h2>
+                    <p>Contact the MRU FRRO Tracker support team.</p>
+                  </div>
+                </div>
+
+                <div
+                  style={{
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    gap: '12px',
+                    alignItems: 'center',
+                  }}
+                >
                   <a
-                    href="https://indianfrro.gov.in/efrro/sessions/user-login"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="primary-button"
+                    href="mailto:mrufrrotracker@gmail.com?subject=MRU%20FRRO%20Tracker%20Support"
                     style={{
                       display: 'inline-flex',
                       alignItems: 'center',
+                      justifyContent: 'center',
                       gap: '8px',
-                      textDecoration: 'none'
+                      backgroundColor: '#123a63',
+                      color: '#ffffff',
+                      padding: '12px 20px',
+                      borderRadius: '8px',
+                      fontWeight: 700,
+                      textDecoration: 'none',
                     }}
                   >
-                    Open Official FRRO Portal
-                    <ExternalLink size={16} />
+                    <Mail size={18} />
+                    Open Email App
                   </a>
 
-                  {!editingDates && (
-                    <button
-                      type="button"
-                      className="secondary-button"
-                      onClick={() => setEditingDates(true)}
-                    >
-                      Update FRRO
-                    </button>
-                  )}
+                  <a
+                    href="https://mail.google.com/mail/?view=cm&fs=1&to=mrufrrotracker%40gmail.com&su=MRU%20FRRO%20Tracker%20Support"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '8px',
+                      backgroundColor: '#ffffff',
+                      color: '#123a63',
+                      padding: '12px 20px',
+                      borderRadius: '8px',
+                      fontWeight: 700,
+                      textDecoration: 'none',
+                      border: '1px solid #123a63',
+                    }}
+                  >
+                    <ExternalLink size={18} />
+                    Open Gmail
+                  </a>
 
-                  {editingDates ? (
-                    <form className="message-form" onSubmit={saveDates}>
-                      <label>
-                        Student name
-                        <input
-                          value={studentDetails.full_name}
-                          onChange={e =>
-                            setStudentDetails(prev => ({
-                              ...prev,
-                              full_name: e.target.value
-                            }))
-                          }
-                          required
-                          placeholder="Full name"
-                        />
-                      </label>
-
-                      <label>
-                        Roll number
-                        <input
-                          value={studentDetails.roll_no}
-                          onChange={e =>
-                            setStudentDetails(prev => ({
-                              ...prev,
-                              roll_no: e.target.value
-                            }))
-                          }
-                          required
-                          placeholder="University roll number"
-                        />
-                      </label>
-
-                      <label>
-                        Course
-                        <input
-                          value={studentDetails.course}
-                          onChange={e =>
-                            setStudentDetails(prev => ({
-                              ...prev,
-                              course: e.target.value
-                            }))
-                          }
-                          required
-                          placeholder="e.g. B.Tech Computer Science"
-                        />
-                      </label>
-
-                      <label>
-                        Country
-                        <input
-                          value={studentDetails.country}
-                          onChange={e =>
-                            setStudentDetails(prev => ({
-                              ...prev,
-                              country: e.target.value
-                            }))
-                          }
-                          required
-                          placeholder="Country of citizenship"
-                        />
-                      </label>
-
-                      <label>
-                        FRRO issue date
-                        <input
-                          type="date"
-                          value={record.frro_issue_date || ''}
-                          onChange={e =>
-                            setRecord(prev => ({
-                              ...prev,
-                              frro_issue_date: e.target.value
-                            }))
-                          }
-                          required
-                        />
-                      </label>
-
-                      <label>
-                        FRRO expiry date
-                        <input
-                          type="date"
-                          value={record.next_expiry_date || ''}
-                          onChange={e =>
-                            setRecord(prev => ({
-                              ...prev,
-                              next_expiry_date: e.target.value
-                            }))
-                          }
-                          required
-                        />
-                      </label>
-
-                      <div className="form-actions">
-                        <button
-                          type="button"
-                          className="secondary-button"
-                          onClick={() => {
-                            setEditingDates(false);
-                            loadProfileAndData();
-                          }}
-                        >
-                          Cancel
-                        </button>
-
-                        <button
-                          type="submit"
-                          className="primary-button"
-                          disabled={saving}
-                        >
-                          {saving ? 'Saving…' : 'Save details'}
-                        </button>
-                      </div>
-                    </form>
-                  ) : (
-                    <p>
-                      {record.next_expiry_date
-                        ? `Your current expiry date is ${dateLabel(record.next_expiry_date)}.`
-                        : 'You have not entered your FRRO dates yet.'}
-                    </p>
-                  )}
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={async () => {
+                      try {
+                        await navigator.clipboard.writeText(
+                          'mrufrrotracker@gmail.com'
+                        );
+                        flash('Support email address copied.');
+                      } catch {
+                        flash(
+                          'Please copy this address manually: mrufrrotracker@gmail.com',
+                          'error'
+                        );
+                      }
+                    }}
+                  >
+                    Copy Support Email
+                  </button>
                 </div>
-              </div>
-            </section>
 
-
-            {/* Email Support */}
-            <section className="panel">
-              <div className="panel-heading">
-                <div>
-                  <h2>Need help?</h2>
-                  <p>Contact the MRU FRRO Tracker support team.</p>
-                </div>
-              </div>
-
-              <div
-                style={{
-                  display: 'flex',
-                  flexWrap: 'wrap',
-                  gap: '12px',
-                  alignItems: 'center',
-                }}
-              >
-                <a
-                  href="mailto:mrufrrotracker@gmail.com?subject=MRU%20FRRO%20Tracker%20Support"
-                  style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: '8px',
-                    backgroundColor: '#123a63',
-                    color: '#ffffff',
-                    padding: '12px 20px',
-                    borderRadius: '8px',
-                    fontWeight: 700,
-                    textDecoration: 'none',
-                  }}
-                >
-                  <Mail size={18} />
-                  Open Email App
-                </a>
-
-                <a
-                  href="https://mail.google.com/mail/?view=cm&fs=1&to=mrufrrotracker%40gmail.com&su=MRU%20FRRO%20Tracker%20Support"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: '8px',
-                    backgroundColor: '#ffffff',
-                    color: '#123a63',
-                    padding: '12px 20px',
-                    borderRadius: '8px',
-                    fontWeight: 700,
-                    textDecoration: 'none',
-                    border: '1px solid #123a63',
-                  }}
-                >
-                  <ExternalLink size={18} />
-                  Open Gmail
-                </a>
-
-                <button
-                  type="button"
-                  className="secondary-button"
-                  onClick={async () => {
-                    try {
-                      await navigator.clipboard.writeText(
-                        'mrufrrotracker@gmail.com'
-                      );
-                      flash('Support email address copied.');
-                    } catch {
-                      flash(
-                        'Please copy this address manually: mrufrrotracker@gmail.com',
-                        'error'
-                      );
-                    }
-                  }}
-                >
-                  Copy Support Email
-                </button>
-              </div>
-
-              <p className="muted" style={{ marginTop: '12px' }}>
-                Support email: mrufrrotracker@gmail.com
-              </p>
-            </section>
-
-
+                <p className="muted" style={{ marginTop: '12px' }}>
+                  Support email: mrufrrotracker@gmail.com
+                </p>
+              </section>
+            )}
             {/* Student notifications */}
-            <section className="panel">
-              <div className="panel-heading">
-                <div>
-                  <h2>Messages and announcements</h2>
-                  <p>Updates from your student services administrator.</p>
+            {studentSection === 'messages' && (
+              <section className="panel" id="student-messages">
+                <div className="panel-heading">
+                  <div>
+                    <h2>Messages and announcements</h2>
+                    <p>
+                      Updates from your student services administrator.
+                    </p>
+                  </div>
+
+                  <div className="message-icon">
+                    <Bell size={20} />
+                  </div>
                 </div>
-                <div className="message-icon">
-                  <Bell size={20} />
-                </div>
+
+                {notifications.length > 0 ? (
+                  <div className="notification-list">
+                    {notifications.map(notification => (
+                      <article
+                        className="notification-item"
+                        key={notification.id}
+                      >
+                        <div>
+                          <h3>{notification.title}</h3>
+                          <p>{notification.body}</p>
+                          <span>
+                            {notification.created_at
+                              ? new Date(
+                                notification.created_at
+                              ).toLocaleString('en-IN')
+                              : 'Date unavailable'}
+                          </span>
+                        </div>
+
+                        {!notification.read_at && (
+                          <button
+                            type="button"
+                            className="secondary-button"
+                            onClick={() => markRead(notification.id)}
+                          >
+                            Mark as read
+                          </button>
+                        )}
+                      </article>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="table-empty">No messages yet.</p>
+                )}
+              </section>
+            )}
+
+            <footer className="page-footer">
+              <strong>MRU FRRO Tracker</strong>
+              <span>•</span>
+              Keep your dates accurate and follow official FRRO guidance.
+
+              <div className="app-signature">
+                <p>
+                  App developed by{' '}
+                  <strong>Mr Blessed Chirovamayi</strong>
+                </p>
+                <p>Undergraduate Mechanical Engineer</p>
+                <p>Manav Rachna University</p>
+                <p>24/10/2026 @ 1500 hrs</p>
               </div>
-
-              {notifications.length ? (
-                <div className="notification-list">
-                  {notifications.map(notification => (
-                    <article
-                      className="notification-item"
-                      key={notification.id}
-                    >
-                      <div>
-                        <h3>{notification.title}</h3>
-                        <p>{notification.body}</p>
-                        <span>
-                          {notification.created_at
-                            ? new Date(notification.created_at).toLocaleString('en-IN')
-                            : 'Date unavailable'}
-                        </span>
-                      </div>
-
-                      {!notification.read_at && (
-                        <button
-                          type="button"
-                          className="secondary-button"
-                          onClick={() => markRead(notification.id)}
-                        >
-                          Mark as read
-                        </button>
-                      )}
-                    </article>
-                  ))}
-                </div>
-              ) : (
-                <p className="table-empty">No messages yet.</p>
-              )}
-            </section>
+            </footer>
           </>
         )}
-
-        <footer className="page-footer">
-          <strong>MRU FRRO Tracker</strong>
-          <span>•</span>
-          Keep your dates accurate and follow official FRRO guidance.
-
-          <div className="app-signature">
-            <p>
-              App developed by <strong>Mr Blessed Chirovamayi</strong>
-            </p>
-            <p>Undergraduate Mechanical Engineer</p>
-            <p>Manav Rachna University</p>
-            <p>24/10/2026 @ 1500 hrs</p>
-          </div>
-        </footer>
       </main>
-    </div >
+    </div>
   );
 }
