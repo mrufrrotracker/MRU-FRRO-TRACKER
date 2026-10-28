@@ -2753,3 +2753,263 @@ input[type="file"] {
 .frro-document-item .status-pill {
     text-transform: capitalize;
 }
+
+/* =========================================
+   MRU FRRO TRACKER — STUDENT DASHBOARD
+   High-visibility status and document styles
+   ========================================= */
+
+.student-dashboard-card {
+    color: #182b3a;
+}
+
+.student-dashboard-card h2,
+.student-dashboard-card h3,
+.student-dashboard-card strong {
+    color: #102a43;
+}
+
+.student-dashboard-card p,
+.student-dashboard-card label {
+    color: #334b5d;
+    line-height: 1.6;
+}
+
+/* -----------------------------------------
+   STATUS PILLS — compact, bright labels
+   ----------------------------------------- */
+
+.status-pill {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 6px 11px;
+    border-radius: 999px;
+    font-size: 13px;
+    font-weight: 800;
+    line-height: 1.4;
+    letter-spacing: 0.15px;
+    border: 1px solid transparent;
+}
+
+/* APPROVED — bright green */
+.status-pill.approved,
+.status-pill.success,
+.status-approved {
+    color: #ffffff !important;
+    background: #15803d !important;
+    border-color: #166534 !important;
+}
+
+/* PENDING — strong amber */
+.status-pill.pending,
+.status-pending {
+    color: #422006 !important;
+    background: #facc15 !important;
+    border-color: #a16207 !important;
+}
+
+/* REJECTED — bright red */
+.status-pill.rejected,
+.status-pill.danger,
+.status-rejected {
+    color: #ffffff !important;
+    background: #b91c1c !important;
+    border-color: #991b1b !important;
+}
+
+/* ACTION REQUIRED — highly visible orange */
+.status-pill.action-required,
+.status-action-required {
+    color: #ffffff !important;
+    background: #c2410c !important;
+    border-color: #9a3412 !important;
+}
+
+/* NEUTRAL / SUBMITTED / UNDER REVIEW */
+.status-pill.neutral,
+.status-pill.submitted,
+.status-pill.review,
+.status-neutral {
+    color: #ffffff !important;
+    background: #334155 !important;
+    border-color: #1e293b !important;
+}
+
+/* -----------------------------------------
+   APPLICATION STATUS — prominent messages
+   ----------------------------------------- */
+
+.status-timeline-item {
+    padding: 14px 16px;
+    margin-bottom: 12px;
+    border: 1px solid #cbd5e1;
+    border-left: 7px solid #475569;
+    border-radius: 10px;
+    color: #182b3a;
+    background: #f8fafc;
+}
+
+.status-timeline-item strong {
+    display: inline-block;
+    color: #102a43;
+    font-size: 15px;
+    font-weight: 800;
+    line-height: 1.5;
+}
+
+.status-timeline-item p {
+    color: #334155;
+    font-size: 14px;
+    line-height: 1.65;
+    overflow-wrap: anywhere;
+}
+
+/* Approved application */
+.status-timeline-item.status-success,
+.status-success {
+    color: #14532d;
+    background: #dcfce7;
+    border-color: #86efac;
+    border-left-color: #15803d;
+}
+
+/* Pending application */
+.status-timeline-item.status-warning,
+.status-warning {
+    color: #713f12;
+    background: #fef3c7;
+    border-color: #fcd34d;
+    border-left-color: #d97706;
+}
+
+/* Rejected application */
+.status-timeline-item.status-danger,
+.status-danger {
+    color: #7f1d1d;
+    background: #fee2e2;
+    border-color: #fca5a5;
+    border-left-color: #b91c1c;
+}
+
+/* Action required — correction or missing information */
+.status-timeline-item.status-action-required,
+.status-action-required {
+    color: #7c2d12;
+    background: #ffedd5;
+    border: 2px solid #fb923c;
+    border-left: 7px solid #c2410c;
+}
+
+/* Make headings and descriptions readable inside coloured alerts */
+.status-success strong,
+.status-warning strong,
+.status-danger strong,
+.status-action-required strong {
+    color: inherit;
+}
+
+.status-success p,
+.status-warning p,
+.status-danger p,
+.status-action-required p {
+    color: inherit;
+}
+
+/* -----------------------------------------
+   DOCUMENT UPLOADS — filenames and feedback
+   ----------------------------------------- */
+
+.frro-document-item {
+    padding: 14px;
+    color: #182b3a;
+    background: #ffffff;
+    border: 1px solid #cbd5e1;
+    border-radius: 10px;
+    margin-bottom: 12px;
+}
+
+.frro-document-item strong,
+.document-details strong {
+    color: #102a43;
+    font-size: 14px;
+    font-weight: 800;
+    line-height: 1.6;
+    overflow-wrap: anywhere;
+}
+
+.document-details small {
+    display: block;
+    color: #475569;
+    font-size: 13px;
+    line-height: 1.6;
+    overflow-wrap: anywhere;
+}
+
+/* Administrator feedback: correction required */
+.document-review-reason {
+    padding: 10px 12px;
+    margin-top: 8px;
+    color: #7c2d12 !important;
+    background: #ffedd5;
+    border-left: 5px solid #c2410c;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 700;
+    line-height: 1.65;
+    overflow-wrap: anywhere;
+}
+
+/* Rejected document */
+.frro-document-item:has(.status-pill.rejected) {
+    border: 2px solid #dc2626;
+    background: #fff7f7;
+}
+
+/* Approved document */
+.frro-document-item:has(.status-pill.approved) {
+    border: 2px solid #16a34a;
+    background: #f0fdf4;
+}
+
+/* Keep file selection controls readable */
+.student-dashboard-card input,
+.student-dashboard-card select,
+.student-dashboard-card textarea {
+    color: #182b3a;
+}
+
+.student-dashboard-card input[type="file"] {
+    width: 100%;
+    color: #334155;
+}
+
+/* -----------------------------------------
+   OTHER DASHBOARD SECTIONS
+   ----------------------------------------- */
+
+.student-dashboard-card a {
+    color: #075985;
+    font-weight: 700;
+    text-decoration-thickness: 1px;
+    text-underline-offset: 3px;
+}
+
+.student-dashboard-card a:hover {
+    color: #0c4a6e;
+}
+
+.frro-document-list>p,
+.status-timeline+p {
+    color: #475569;
+    line-height: 1.6;
+}
+
+.student-dashboard-card button:focus-visible,
+.student-dashboard-card a:focus-visible,
+.student-dashboard-card input:focus-visible,
+.student-dashboard-card select:focus-visible,
+.student-dashboard-card textarea:focus-visible {
+    outline: 3px solid #2563eb;
+    outline-offset: 3px;
+}
