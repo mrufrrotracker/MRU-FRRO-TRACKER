@@ -2,15 +2,35 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import {
-  Activity, AlertCircle, ArrowDownRight, ArrowUpRight, Bell, CalendarDays,
-  CheckCircle2, ChevronRight, Clock3, ExternalLink, FileText, History,
-  LogOut, Mail, MessageSquareText, RefreshCw, Search, Send, ShieldCheck,
-  Upload, Users, XCircle
+  Activity,
+  AlertCircle,
+  ArrowDownRight,
+  ArrowUpRight,
+  Bell,
+  CalendarDays,
+  CheckCircle2,
+  ChevronRight,
+  Clock3,
+  ExternalLink,
+  FileText,
+  History,
+  LogOut,
+  Mail,
+  MessageSquareText,
+  RefreshCw,
+  Search,
+  Send,
+  ShieldCheck,
+  Upload,
+  Users,
+  XCircle,
 } from 'lucide-react';
 
 import { supabase, supabaseConfigured } from './supabase';
+
 import { Capacitor } from '@capacitor/core';
 import { FirebaseMessaging } from '@capacitor-firebase/messaging';
+
 
 
 const REMINDER_DAYS = [60, 45, 30, 21, 14, 10, 7, 3, 2, 1];
@@ -255,7 +275,9 @@ export default function App() {
   const [sending, setSending] = useState(false);
   const [tab, setTab] = useState('renewals');
 
-  const flash = (text, type = 'success') => setNotice({ text, type });
+  const flash = useCallback((text, type = 'success') => {
+    setNotice({ text, type });
+  }, []);
   const loadStatusHistory = useCallback(async () => {
     if (!supabase || !session?.user?.id) return;
 
@@ -490,7 +512,7 @@ export default function App() {
     const { data, error } = await supabase
       .from('frro_documents')
       .select(
-        'id, storage_path, original_file_name, content_type, file_size, uploaded_at, review_status, review_reason, reviewed_at'
+        'id, storage_path, drive_file_id, original_file_name, content_type, file_size, uploaded_at, review_status, review_reason, reviewed_at'
       )
       .eq('user_id', session.user.id)
       .order('uploaded_at', { ascending: false });
@@ -503,27 +525,94 @@ export default function App() {
     setFrroDocuments(data ?? []);
   }, [session?.user?.id, flash]);
 
+
+
   const viewFrroDocument = async (file) => {
-    if (!file?.storage_path) {
-      flash('Document file path is missing.', 'error');
+    if (!supabase || !file?.id) {
+      flash('Document or Supabase session is unavailable.', 'error');
       return;
     }
 
-    const { data, error } = await supabase.storage
-      .from('FRRO Document')
-      .createSignedUrl(file.storage_path, 60);
+    const newTab = window.open('about:blank', '_blank');
 
-    if (error) {
-      flash(`Could not open document: ${error.message}`, 'error');
+    if (!newTab) {
+      flash('Please allow pop-ups to view this document.', 'error');
       return;
     }
 
-    window.open(data.signedUrl, '_blank', 'noopener,noreferrer');
+    try {
+      newTab.document.title = 'Loading document…';
+
+      const {
+        data: { session: currentSession },
+        error: sessionError,
+      } = await supabase.auth.getSession();
+
+      if (sessionError || !currentSession?.access_token) {
+        throw new Error('Your session has expired. Please sign in again.');
+      }
+
+      let blob;
+
+      if (file.storage_path) {
+        // Download from the private Supabase Storage bucket.
+        const { data, error } = await supabase.storage
+          .from('FRRO Document')
+          .download(file.storage_path);
+
+        if (error) throw error;
+        if (!data) throw new Error('The document file was not found.');
+
+        blob = data;
+      } else if (file.drive_file_id) {
+        // Keep legacy Google Drive documents accessible.
+        const response = await fetch(
+          `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/view-google-drive-document`,
+          {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${currentSession.access_token}`,
+              apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ fileId: file.drive_file_id }),
+          }
+        );
+
+        if (!response.ok) {
+          const result = await response.json().catch(() => ({}));
+          throw new Error(
+            result.error || 'Unable to open the Google Drive document.'
+          );
+        }
+
+        blob = await response.blob();
+      } else {
+        throw new Error('This document has no valid storage location.');
+      }
+
+      const objectUrl = URL.createObjectURL(blob);
+
+      newTab.location.href = objectUrl;
+      newTab.document.title =
+        file.original_file_name || 'FRRO Document';
+
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 5 * 60 * 1000);
+    } catch (error) {
+      newTab.close();
+      flash(error.message || 'Unable to open this document.', 'error');
+    }
   };
+
 
 
   const handleDocumentUpload = async (event) => {
     event.preventDefault();
+
+    if (!supabase || !session?.user?.id) {
+      flash('Please sign in before uploading a document.', 'error');
+      return;
+    }
 
     if (!selectedDocument) {
       flash('Please select your new FRRO document.', 'error');
@@ -542,57 +631,99 @@ export default function App() {
       return;
     }
 
-    if (file.size > 400 * 1024) {
-      flash('The file must be 400 KB or smaller.', 'error');
+    // Requires the Supabase bucket limit to be raised to 50 KB.
+    const MAX_FILE_SIZE = 50 * 1024;
+
+    if (file.size > MAX_FILE_SIZE) {
+      flash('The file must be 50 KB or smaller.', 'error');
       return;
     }
 
     setUploadingDocument(true);
 
-    try {
-      const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
-      const storagePath =
-        `${session.user.id}/${Date.now()}-${safeName}`;
+    let uploadedPath = null;
 
+    try {
+      const {
+        data: { session: currentSession },
+        error: sessionError,
+      } = await supabase.auth.getSession();
+
+      if (sessionError || !currentSession?.access_token) {
+        throw new Error('Your session has expired. Please sign in again.');
+      }
+
+      const userId = currentSession.user.id;
+
+      // Keep the first storage folder equal to the authenticated user ID.
+      const safeFileName = file.name
+        .normalize('NFKD')
+        .replace(/[^a-zA-Z0-9._-]/g, '_')
+        .slice(-150) || 'frro-document';
+
+      const uniqueFileName = `${crypto.randomUUID()}-${safeFileName}`;
+      uploadedPath = `${userId}/${uniqueFileName}`;
+
+      // 1. Upload the actual file to private Supabase Storage.
       const { error: uploadError } = await supabase.storage
         .from('FRRO Document')
-        .upload(storagePath, file, {
+        .upload(uploadedPath, file, {
           contentType: file.type,
           upsert: false,
         });
 
       if (uploadError) throw uploadError;
 
+      // 2. Save the document's metadata in the existing database table.
       const { error: metadataError } = await supabase
         .from('frro_documents')
         .insert({
-          user_id: session.user.id,
-          storage_path: storagePath,
+          user_id: userId,
+          storage_path: uploadedPath,
           original_file_name: file.name,
           content_type: file.type,
           file_size: file.size,
+          review_status: 'pending',
         });
 
-      if (metadataError) {
-        throw new Error(
-          `The file uploaded, but its record could not be saved: ${metadataError.message}`
-        );
-      }
+      if (metadataError) throw metadataError;
 
+      // 3. Refresh the student's document list.
       await loadFrroDocuments();
+
       setSelectedDocument(null);
 
       const input = document.getElementById('frro-document-file');
       if (input) input.value = '';
 
-      flash('FRRO document uploaded successfully.');
+      flash('FRRO document uploaded securely to Supabase Storage.');
     } catch (error) {
-      console.error('FRRO document upload failed:', error);
-      flash(error.message || 'Could not upload the FRRO document.', 'error');
+      console.error('Supabase FRRO document upload failed:', error);
+
+      // If Storage upload succeeded but metadata saving failed,
+      // try to remove the unregistered file.
+      if (uploadedPath) {
+        const { error: cleanupError } = await supabase.storage
+          .from('FRRO Document')
+          .remove([uploadedPath]);
+
+        if (cleanupError) {
+          console.error(
+            'Could not clean up the unregistered file:',
+            cleanupError.message
+          );
+        }
+      }
+
+      flash(
+        error.message || 'Could not upload the FRRO document.',
+        'error'
+      );
     } finally {
       setUploadingDocument(false);
     }
   };
+
 
 
 
@@ -701,7 +832,7 @@ export default function App() {
       const { data: documents, error } = await supabase
         .from('frro_documents')
         .select(
-          'id, user_id, storage_path, original_file_name,content_type, file_size, uploaded_at,review_status, review_reason, reviewed_by, reviewed_at'
+          'id, user_id, drive_file_id, storage_path, original_file_name, content_type, file_size, uploaded_at, review_status, review_reason, reviewed_by, reviewed_at'
         )
         .order('uploaded_at', { ascending: false });
 
@@ -765,30 +896,30 @@ export default function App() {
   }, [profile?.role, profile?.verification_status]);
 
 
+
   async function openAdminDocument(doc) {
     if (
       !supabase ||
       profile?.role !== 'admin' ||
       profile?.verification_status !== 'verified'
     ) {
-      return flash('Only verified administrators can open these documents.', 'error');
+      return flash(
+        'Only verified administrators can open these documents.',
+        'error'
+      );
     }
 
-    try {
-      const { data, error } = await supabase.storage
-        .from('FRRO Document')
-        .createSignedUrl(doc.storage_path, 60);
-
-      if (error) throw error;
-      if (!data?.signedUrl) {
-        throw new Error('Could not create a secure document link.');
-      }
-
-      window.open(data.signedUrl, '_blank', 'noopener,noreferrer');
-    } catch (error) {
-      flash(`Could not open document: ${error.message}`, 'error');
+    if (!doc?.id || (!doc.storage_path && !doc.drive_file_id)) {
+      return flash(
+        'This document has no valid storage location.',
+        'error'
+      );
     }
+
+    await viewFrroDocument(doc);
   }
+
+
 
 
   async function confirmNewFrroReceived(student) {
@@ -918,7 +1049,24 @@ export default function App() {
 
       if (error) throw error;
 
+      // Record the document review in the student's status history.
+      const historyStatus = {
+        approved: 'document_approved',
+        rejected: 'document_rejected',
+        action_required: 'action_required',
+      }[reviewStatus];
+
+      await saveStatusChange(
+        doc.user_id,
+        historyStatus,
+        reviewStatus === 'action_required'
+          ? 'upload_correct_document'
+          : reason
+      );
+
       flash('Document review status saved successfully.');
+
+      await loadStatusHistory();
       await loadAdminDocuments();
     } catch (error) {
       flash(error.message || 'Could not save document review.', 'error');
@@ -1014,7 +1162,7 @@ export default function App() {
 
 
         flash(
-          'Registration submitted. Check your email if confirmation is enabled.'
+          'Registration submitted. Sign in using your email and password.'
         );
 
         setMode('login');
@@ -1489,6 +1637,7 @@ export default function App() {
 
   return (
     <div className="app-frame">
+
       <aside className="sidebar">
         <div className="brand sidebar-brand">
           <div className="brand-icon">MRU</div>
@@ -2143,22 +2292,23 @@ export default function App() {
                                 Reject application
                               </button>
 
-                              {renewalStatusFor(doc.frro).key !== 'received' && (
-                                <button
-                                  type="button"
-                                  className="primary-button"
-                                  disabled={saving || !doc.frro}
-                                  onClick={() =>
-                                    confirmNewFrroReceived({
-                                      user_id: doc.user_id
-                                    })
-                                  }
-                                >
-                                  {saving
-                                    ? 'Confirming…'
-                                    : 'Confirm New FRRO Received'}
-                                </button>
-                              )}
+                              {doc.review_status === 'approved' &&
+                                renewalStatusFor(doc.frro).key !== 'received' && (
+                                  <button
+                                    type="button"
+                                    className="primary-button"
+                                    disabled={saving || !doc.frro}
+                                    onClick={() =>
+                                      confirmNewFrroReceived({
+                                        user_id: doc.user_id
+                                      })
+                                    }
+                                  >
+                                    {saving
+                                      ? 'Confirming…'
+                                      : 'Confirm New FRRO Received'}
+                                  </button>
+                                )}
 
                               {renewalStatusFor(doc.frro).key === 'received' && (
                                 <span className="status-pill success">
@@ -2315,7 +2465,7 @@ export default function App() {
 
                   <form onSubmit={handleDocumentUpload}>
                     <label htmlFor="frro-document-file">
-                      Select document (PDF, JPG, or PNG; maximum 400 KB)
+                      Select document (PDF, JPG, or PNG; maximum 50 KB)
                     </label>
 
                     <input
@@ -2642,6 +2792,7 @@ export default function App() {
               </div>
             </section>
 
+
             {/* Email Support */}
             <section className="panel">
               <div className="panel-heading">
@@ -2651,27 +2802,81 @@ export default function App() {
                 </div>
               </div>
 
-              <a
-                href="mailto:mrufrrotracker@gmail.com?subject=MRU%20FRRO%20Tracker%20Support"
+              <div
                 style={{
-                  display: 'inline-flex',
+                  display: 'flex',
+                  flexWrap: 'wrap',
+                  gap: '12px',
                   alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: '8px',
-                  backgroundColor: '#ff0000',
-                  color: '#ffffff',
-                  padding: '12px 20px',
-                  borderRadius: '8px',
-                  fontWeight: 700,
-                  textDecoration: 'none',
-                  border: 'none',
-                  cursor: 'pointer'
                 }}
               >
-                <Mail size={18} />
-                Email Support
-              </a>
+                <a
+                  href="mailto:mrufrrotracker@gmail.com?subject=MRU%20FRRO%20Tracker%20Support"
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '8px',
+                    backgroundColor: '#123a63',
+                    color: '#ffffff',
+                    padding: '12px 20px',
+                    borderRadius: '8px',
+                    fontWeight: 700,
+                    textDecoration: 'none',
+                  }}
+                >
+                  <Mail size={18} />
+                  Open Email App
+                </a>
+
+                <a
+                  href="https://mail.google.com/mail/?view=cm&fs=1&to=mrufrrotracker%40gmail.com&su=MRU%20FRRO%20Tracker%20Support"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '8px',
+                    backgroundColor: '#ffffff',
+                    color: '#123a63',
+                    padding: '12px 20px',
+                    borderRadius: '8px',
+                    fontWeight: 700,
+                    textDecoration: 'none',
+                    border: '1px solid #123a63',
+                  }}
+                >
+                  <ExternalLink size={18} />
+                  Open Gmail
+                </a>
+
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={async () => {
+                    try {
+                      await navigator.clipboard.writeText(
+                        'mrufrrotracker@gmail.com'
+                      );
+                      flash('Support email address copied.');
+                    } catch {
+                      flash(
+                        'Please copy this address manually: mrufrrotracker@gmail.com',
+                        'error'
+                      );
+                    }
+                  }}
+                >
+                  Copy Support Email
+                </button>
+              </div>
+
+              <p className="muted" style={{ marginTop: '12px' }}>
+                Support email: mrufrrotracker@gmail.com
+              </p>
             </section>
+
 
             {/* Student notifications */}
             <section className="panel">
