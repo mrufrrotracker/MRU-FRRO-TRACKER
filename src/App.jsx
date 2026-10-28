@@ -286,7 +286,9 @@ export default function App() {
     try {
       let query = supabase
         .from('frro_status_history')
-        .select('id,user_id,status,reason,changed_by,changed_at')
+        .select(
+          'id,user_id,status,reason,changed_by,changed_at,notification_expires_at'
+        )
         .order('changed_at', { ascending: false })
         .limit(200);
 
@@ -2560,17 +2562,42 @@ export default function App() {
                     </div>
                   </div>
 
-                  <p>
-                    <strong>Status: </strong>
-                    {statusDisplay(
-                      statusHistory.find(
-                        item => item.user_id === session.user.id
-                      )?.status || renewalStatusFor(record).key,
-                      statusHistory.find(
-                        item => item.user_id === session.user.id
-                      )?.reason
-                    ).label}
-                  </p>
+
+                  {(() => {
+                    const latestStatus = statusHistory.find(
+                      item => item.user_id === session.user.id
+                    );
+
+                    const isActionRequired =
+                      latestStatus?.status === 'action_required';
+
+                    const expiresAt = latestStatus?.notification_expires_at
+                      ? new Date(latestStatus.notification_expires_at).getTime()
+                      : null;
+
+                    const notificationIsActive =
+                      expiresAt !== null &&
+                      Number.isFinite(expiresAt) &&
+                      Date.now() < expiresAt;
+
+                    const shouldShowHistoryStatus =
+                      latestStatus &&
+                      (isActionRequired || notificationIsActive);
+
+                    const currentStatus = shouldShowHistoryStatus
+                      ? statusDisplay(latestStatus.status, latestStatus.reason)
+                      : renewalStatusFor(record);
+
+                    return (
+                      <p>
+                        <strong>Status: </strong>
+                        <span className={`status-pill ${currentStatus.tone}`}>
+                          {currentStatus.label}
+                        </span>
+                      </p>
+                    );
+                  })()}
+
 
                   {record.renewal_status !== 'in_progress' &&
                     renewalStatusFor(record).key !== 'received' && (
