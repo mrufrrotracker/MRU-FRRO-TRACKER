@@ -276,6 +276,7 @@ export default function App() {
   const [selectedStudents, setSelectedStudents] = useState([]);
   const [messageTitle, setMessageTitle] = useState('');
   const [messageBody, setMessageBody] = useState('');
+  const [errorMessage, setErrorMessage] = useState('');
   const [sending, setSending] = useState(false);
   const [tab, setTab] = useState('renewals');
   const [studentSection, setStudentSection] = useState('dashboard');
@@ -1828,20 +1829,105 @@ export default function App() {
       block: 'start',
     });
   };
+
   const handleDocumentUpload = async (event) => {
     event.preventDefault();
 
     if (!selectedDocument) {
-      setMessage('Please select a document first.');
+      setErrorMessage('Please select a document first.');
+      return;
+    }
+
+    const allowedTypes = [
+      'application/pdf',
+      'image/jpeg',
+      'image/png',
+    ];
+
+    if (!allowedTypes.includes(selectedDocument.type)) {
+      setErrorMessage('Please select a PDF, JPG, or PNG file.');
       return;
     }
 
     if (selectedDocument.size > 50 * 1024) {
-      setMessage('Document size must not exceed 50 KB.');
+      setErrorMessage('Document size must not exceed 50 KB.');
       return;
     }
 
-    setMessage('Document selected successfully.');
+    if (!supabase || !session?.user?.id) {
+      setErrorMessage('Please sign in again before uploading.');
+      return;
+    }
+
+    setUploadingDocument(true);
+    setErrorMessage('');
+    setNotice(null);
+
+    try {
+      const file = selectedDocument;
+      const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+      const filePath = `${session.user.id}/${Date.now()}-${safeName}`;
+
+      // 1. Upload the actual file to Supabase Storage.
+      const { data: uploadedFile, error: uploadError } =
+        await supabase.storage
+          .from('FRRO Document')
+          .upload(filePath, file, {
+            contentType: file.type,
+            upsert: false,
+          });
+
+      if (uploadError) throw uploadError;
+
+      // 2. Save the uploaded file's details in the database.
+      const { error: insertError } = await supabase
+        .from('frro_documents')
+        .insert({
+          user_id: session.user.id,
+          original_file_name: file.name,
+          storage_path: uploadedFile.path,
+          content_type: file.type,
+          file_size: file.size,
+        });
+
+      if (insertError) {
+        // Remove the uploaded file if saving its metadata fails.
+        const { error: cleanupError } = await supabase.storage
+          .from('FRRO Document')
+          .remove([uploadedFile.path]);
+
+        if (cleanupError) {
+          console.error('Storage cleanup failed:', cleanupError.message);
+        }
+
+        throw insertError;
+      }
+
+      setSelectedDocument(null);
+
+      // Clear the file input.
+      if (event.currentTarget) {
+        event.currentTarget.reset();
+      }
+
+      // Refresh the uploaded document list.
+      await loadFrroDocuments();
+
+      flash('FRRO document uploaded successfully.', 'success');
+    } catch (error) {
+      console.error('FRRO document upload failed:', error);
+
+      setErrorMessage(
+        error?.message || 'Document upload failed. Please try again.'
+      );
+
+      flash(
+        error?.message || 'Document upload failed. Please try again.',
+        'error'
+      );
+    } finally {
+      setUploadingDocument(false);
+    }
   };
 
   return (
@@ -2796,6 +2882,11 @@ export default function App() {
                       : 'Upload FRRO document'}
                   </button>
                 </form>
+                {errorMessage && (
+                  <p className="error-message" role="alert">
+                    {errorMessage}
+                  </p>
+                )}
 
                 <div className="frro-document-list">
                   <h3>Uploaded documents</h3>
