@@ -266,6 +266,7 @@ export default function App() {
 
   const [notifications, setNotifications] = useState([]);
   const [mode, setMode] = useState('login');
+  const [passwordResetMode, setPasswordResetMode] = useState(false);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [editingDates, setEditingDates] = useState(false);
@@ -375,9 +376,15 @@ export default function App() {
       if (error) flash(error.message, 'error');
       setSession(data?.session ?? null);
     });
-
     const { data: listener } = supabase.auth.onAuthStateChange(
-      (_event, next) => setSession(next)
+      (event, next) => {
+        setSession(next);
+
+        if (event === 'PASSWORD_RECOVERY') {
+          setPasswordResetMode(true);
+          setNotice(null);
+        }
+      }
     );
 
     return () => listener.subscription.unsubscribe();
@@ -609,127 +616,68 @@ export default function App() {
       flash(error.message || 'Unable to open this document.', 'error');
     }
   };
-
-
-
-  const handleDocumentUpload = async (event) => {
+  const handleUpdatePassword = async (event) => {
     event.preventDefault();
 
-    if (!supabase || !session?.user?.id) {
-      flash('Please sign in before uploading a document.', 'error');
+    if (!supabase) {
+      flash('Supabase is not configured.', 'error');
       return;
     }
 
-    if (!selectedDocument) {
-      flash('Please select your new FRRO document.', 'error');
+    const form = event.currentTarget;
+    if (mode === 'forgot-password') {
+      const email = form.elements.email.value.trim();
+
+      setSaving(true);
+
+      try {
+        const { error } = await supabase.auth.resetPasswordForEmail(email, {
+          redirectTo: window.location.origin,
+        });
+
+        if (error) throw error;
+
+        flash(
+          'If an account exists for that email, a password reset link will be sent.',
+          'success'
+        );
+      } catch (error) {
+        flash(error.message || 'Unable to send the reset link.', 'error');
+      } finally {
+        setSaving(false);
+      }
+
+      return;
+    }
+    const password = form.elements.newPassword.value;
+
+    if (password.length < 8) {
+      flash('Password must be at least 8 characters.', 'error');
       return;
     }
 
-    const file = selectedDocument;
-    const allowedTypes = [
-      'application/pdf',
-      'image/jpeg',
-      'image/png',
-    ];
-
-    if (!allowedTypes.includes(file.type)) {
-      flash('Please upload a PDF, JPG, or PNG file.', 'error');
-      return;
-    }
-
-    // Requires the Supabase bucket limit to be raised to 50 KB.
-    const MAX_FILE_SIZE = 50 * 1024;
-
-    if (file.size > MAX_FILE_SIZE) {
-      flash('The file must be 50 KB or smaller.', 'error');
-      return;
-    }
-
-    setUploadingDocument(true);
-
-    let uploadedPath = null;
+    setSaving(true);
 
     try {
-      const {
-        data: { session: currentSession },
-        error: sessionError,
-      } = await supabase.auth.getSession();
+      const { error } = await supabase.auth.updateUser({ password });
 
-      if (sessionError || !currentSession?.access_token) {
-        throw new Error('Your session has expired. Please sign in again.');
-      }
+      if (error) throw error;
 
-      const userId = currentSession.user.id;
+      setPasswordResetMode(false);
+      setMode('login');
 
-      // Keep the first storage folder equal to the authenticated user ID.
-      const safeFileName = file.name
-        .normalize('NFKD')
-        .replace(/[^a-zA-Z0-9._-]/g, '_')
-        .slice(-150) || 'frro-document';
-
-      const uniqueFileName = `${crypto.randomUUID()}-${safeFileName}`;
-      uploadedPath = `${userId}/${uniqueFileName}`;
-
-      // 1. Upload the actual file to private Supabase Storage.
-      const { error: uploadError } = await supabase.storage
-        .from('FRRO Document')
-        .upload(uploadedPath, file, {
-          contentType: file.type,
-          upsert: false,
-        });
-
-      if (uploadError) throw uploadError;
-
-      // 2. Save the document's metadata in the existing database table.
-      const { error: metadataError } = await supabase
-        .from('frro_documents')
-        .insert({
-          user_id: userId,
-          storage_path: uploadedPath,
-          original_file_name: file.name,
-          content_type: file.type,
-          file_size: file.size,
-          review_status: 'pending',
-        });
-
-      if (metadataError) throw metadataError;
-
-      // 3. Refresh the student's document list.
-      await loadFrroDocuments();
-
-      setSelectedDocument(null);
-
-      const input = document.getElementById('frro-document-file');
-      if (input) input.value = '';
-
-      flash('FRRO document uploaded securely to Supabase Storage.');
-    } catch (error) {
-      console.error('Supabase FRRO document upload failed:', error);
-
-      // If Storage upload succeeded but metadata saving failed,
-      // try to remove the unregistered file.
-      if (uploadedPath) {
-        const { error: cleanupError } = await supabase.storage
-          .from('FRRO Document')
-          .remove([uploadedPath]);
-
-        if (cleanupError) {
-          console.error(
-            'Could not clean up the unregistered file:',
-            cleanupError.message
-          );
-        }
-      }
+      await supabase.auth.signOut();
 
       flash(
-        error.message || 'Could not upload the FRRO document.',
-        'error'
+        'Password updated successfully. Please sign in with your new password.',
+        'success'
       );
+    } catch (error) {
+      flash(error.message || 'Unable to update your password.', 'error');
     } finally {
-      setUploadingDocument(false);
+      setSaving(false);
     }
   };
-
 
 
 
@@ -1190,6 +1138,75 @@ export default function App() {
       setSaving(false);
     }
   }
+  async function handleForgotPassword(event) {
+    event.preventDefault();
+
+    if (!supabase) {
+      return flash('Supabase is not configured.', 'error');
+    }
+
+    const form = new FormData(event.currentTarget);
+    const email = String(form.get('email') || '').trim().toLowerCase();
+
+    if (!email || !email.includes('@')) {
+      return flash('Enter a valid email address.', 'error');
+    }
+
+    setSaving(true);
+
+    try {
+      const { error } = await supabase.auth.resetPasswordForEmail(email, {
+        redirectTo: `${window.location.origin}/`
+      });
+
+      if (error) throw error;
+
+      flash(
+        'If an account exists for that email, a password reset link will be sent.'
+      );
+    } catch (error) {
+      flash(error.message || 'Unable to request a password reset.', 'error');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleNewPassword(event) {
+    event.preventDefault();
+
+    if (!supabase) return;
+
+    const form = new FormData(event.currentTarget);
+    const password = String(form.get('new_password') || '');
+    const confirmation = String(form.get('confirm_password') || '');
+
+    if (password.length < 8) {
+      return flash('Password must be at least 8 characters.', 'error');
+    }
+
+    if (password !== confirmation) {
+      return flash('The passwords do not match.', 'error');
+    }
+
+    setSaving(true);
+
+    try {
+      const { error } = await supabase.auth.updateUser({ password });
+
+      if (error) throw error;
+
+      setPasswordResetMode(false);
+      setSession(null);
+      await supabase.auth.signOut();
+      setMode('login');
+
+      flash('Password updated successfully. Please sign in with your new password.');
+    } catch (error) {
+      flash(error.message || 'Unable to update your password.', 'error');
+    } finally {
+      setSaving(false);
+    }
+  }
 
   async function markSubmittedUnderProcess() {
     if (!supabase || !session?.user) return;
@@ -1569,71 +1586,234 @@ export default function App() {
 
 
   if (!supabaseConfigured) return <div className="setup-screen"><div className="auth-card setup-card"><div className="brand"><div className="brand-icon">MRU</div><div><strong>MRU FRRO Tracker</strong><span>Student renewal management</span></div></div><div className="setup-symbol"><ShieldCheck size={30} /></div><h1>Connect your Supabase project</h1><p>Create <code>.env.local</code> from <code>.env.example</code>, add your project URL and publishable/anon key, then restart the development server.</p><div className="setup-code">VITE_SUPABASE_URL=https://YOUR_PROJECT.supabase.co<br />VITE_SUPABASE_ANON_KEY=YOUR_PUBLIC_KEY</div><p className="muted">Never put a Supabase service-role key in a browser app.</p></div></div>;
+  if (passwordResetMode) {
+    return (
+      <div className="auth-layout">
+        <div className="auth-panel">
+          <form className="auth-card" onSubmit={handleNewPassword}>
+            <div className="auth-card-head">
+              <span className="eyebrow">PASSWORD RECOVERY</span>
+              <h2>Set a new password</h2>
+              <p>Choose a new password for your account.</p>
+            </div>
 
-  if (!session) return <div className="auth-layout"><div className="auth-intro"><div className="brand"><div className="brand-icon">MRU</div><div><strong>MRU FRRO Tracker</strong><span>International student services</span></div></div><div className="intro-copy"><div className="eyebrow">RENEWAL MANAGEMENT, MADE SIMPLE</div><h1>Know your dates.<br /><em>Stay prepared.</em></h1><p>A calmer way to track FRRO renewals, receive timely reminders, and keep important dates in one place.</p><div className="intro-points"><span><CheckCircle2 size={17} /> Two essential dates</span><span><Bell size={17} /> Ten reminder milestones</span><span><ShieldCheck size={17} /> Protected student records</span></div></div><div className="intro-footer">MRU · Student support workspace</div></div><div className="auth-panel"><form className="auth-card" onSubmit={handleAuth}><div className="auth-card-head"><span className="eyebrow">{mode === 'login' ? 'WELCOME BACK' : 'GET STARTED'}</span><h2>{mode === 'login' ? 'Sign in to your account' : 'Create a student account'}</h2><p>{mode === 'login' ? 'Access your renewal details and reminders.' : 'Register to save your FRRO renewal dates.'}</p></div>
-    {mode === 'register' && (
-      <>
-        <label>
-          Student name
-          <input
-            name="full_name"
-            autoComplete="name"
-            required
-            placeholder="Your full name"
-          />
-        </label>
+            <label>
+              New password
+              <input
+                name="new_password"
+                type="password"
+                minLength={8}
+                autoComplete="new-password"
+                required
+                placeholder="At least 8 characters"
+              />
+            </label>
 
-        <label>
-          Roll No
-          <input
-            name="roll_no"
-            required
-            placeholder="Your university roll number"
-          />
-        </label>
+            <label>
+              Confirm new password
+              <input
+                name="confirm_password"
+                type="password"
+                minLength={8}
+                autoComplete="new-password"
+                required
+                placeholder="Enter your new password again"
+              />
+            </label>
 
-        <label>
-          Course
-          <input
-            name="course"
-            required
-            placeholder="Your course"
-          />
-        </label>
+            <button className="primary-button" disabled={saving}>
+              {saving ? 'Updating…' : 'Update password'}
+            </button>
 
-        <label>
-          Country
-          <input
-            name="country"
-            required
-            placeholder="Your country"
-          />
-        </label>
-      </>
-    )}
-    <label>Email address<input name="email" type="email" autoComplete="email" required placeholder="you@example.com" /></label>
-    <label>
-      Password
-      <div className="password-input-wrap">
-        <input
-          name="password"
-          type={showPassword ? 'text' : 'password'}
-          minLength="8"
-          autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
-          required
-          placeholder="At least 8 characters"
-        />
-        <button
-          type="button"
-          className="password-toggle"
-          onClick={() => setShowPassword((current) => !current)}
-          aria-label={showPassword ? 'Hide password' : 'Show password'}
-        >
-          {showPassword ? 'Hide' : 'Show'}
-        </button>
+            <Notice notice={notice} clear={() => setNotice(null)} />
+          </form>
+        </div>
       </div>
-    </label>
-    <button className="primary-button" disabled={saving}>{saving ? 'Please wait…' : mode === 'login' ? 'Sign in' : 'Create account'}<ChevronRight size={18} /></button><p className="switch-auth">{mode === 'login' ? 'New student?' : 'Already registered?'} <button type="button" onClick={() => { setMode(mode === 'login' ? 'register' : 'login'); setNotice(null); }}>{mode === 'login' ? 'Create an account' : 'Sign in instead'}</button></p><Notice notice={notice} clear={() => setNotice(null)} /></form><div className="auth-footnote">Your FRRO details should be handled only in an approved, access-controlled deployment.</div></div></div>;
+    );
+  }
+
+  // Login, registration and forgot-password screens
+  if (!session) {
+    return (
+      <div className="auth-layout auth-layout-compact">
+        <div className="auth-panel">
+          <form className="auth-card" onSubmit={handleAuth}>
+            <div className="auth-card-head">
+              <span className="eyebrow">
+                {mode === 'login'
+                  ? 'WELCOME BACK'
+                  : mode === 'register'
+                    ? 'GET STARTED'
+                    : 'ACCOUNT RECOVERY'}
+              </span>
+
+              <h2>
+                {mode === 'login'
+                  ? 'Sign in to your account'
+                  : mode === 'register'
+                    ? 'Create a student account'
+                    : 'Reset your password'}
+              </h2>
+
+              <p>
+                {mode === 'login'
+                  ? 'Access your renewal details and reminders.'
+                  : mode === 'register'
+                    ? 'Register to save your FRRO renewal dates.'
+                    : 'Enter your email address to receive a password reset link.'}
+              </p>
+            </div>
+
+            {mode === 'register' && (
+              <>
+                <label>
+                  Student name
+                  <input
+                    name="full_name"
+                    autoComplete="name"
+                    required
+                    placeholder="Your full name"
+                  />
+                </label>
+
+                <label>
+                  Roll No
+                  <input
+                    name="roll_no"
+                    required
+                    placeholder="Your university roll number"
+                  />
+                </label>
+
+                <label>
+                  Course
+                  <input
+                    name="course"
+                    required
+                    placeholder="Your course"
+                  />
+                </label>
+
+                <label>
+                  Country
+                  <input
+                    name="country"
+                    required
+                    placeholder="Your country"
+                  />
+                </label>
+              </>
+            )}
+
+            <label>
+              Email address
+              <input
+                name="email"
+                type="email"
+                autoComplete="email"
+                required
+                placeholder="you@example.com"
+              />
+            </label>
+
+            {mode !== 'forgot-password' && (
+              <label>
+                Password
+                <div className="password-input-wrap">
+                  <input
+                    name="password"
+                    type={showPassword ? 'text' : 'password'}
+                    minLength={8}
+                    autoComplete={
+                      mode === 'login'
+                        ? 'current-password'
+                        : 'new-password'
+                    }
+                    required
+                    placeholder="At least 8 characters"
+                  />
+
+                  <button
+                    type="button"
+                    className="password-toggle"
+                    onClick={() =>
+                      setShowPassword((current) => !current)
+                    }
+                    aria-label={
+                      showPassword ? 'Hide password' : 'Show password'
+                    }
+                  >
+                    {showPassword ? 'Hide' : 'Show'}
+                  </button>
+                </div>
+              </label>
+            )}
+
+            {mode === 'login' && (
+              <p className="forgot-password-link">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMode('forgot-password');
+                    setNotice(null);
+                  }}
+                >
+                  Forgot password?
+                </button>
+              </p>
+            )}
+
+            <button
+              className="primary-button"
+              type="submit"
+              disabled={saving}
+            >
+              {saving
+                ? 'Please wait…'
+                : mode === 'login'
+                  ? 'Sign in'
+                  : mode === 'register'
+                    ? 'Create account'
+                    : 'Send reset link'}
+
+              <ChevronRight size={18} />
+            </button>
+
+            <p className="switch-auth">
+              {mode === 'login'
+                ? 'New student?'
+                : mode === 'register'
+                  ? 'Already registered?'
+                  : 'Remember your password?'}
+
+              {' '}
+
+              <button
+                type="button"
+                onClick={() => {
+                  setMode(mode === 'login' ? 'register' : 'login');
+                  setNotice(null);
+                }}
+              >
+                {mode === 'login'
+                  ? 'Create an account'
+                  : 'Sign in instead'}
+              </button>
+            </p>
+
+            <Notice
+              notice={notice}
+              clear={() => setNotice(null)}
+            />
+          </form>
+          <div className="auth-footnote">
+            Your FRRO details should be handled only in an approved,
+            access-controlled deployment.
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   const isAdmin =
     profile?.role === 'admin' &&
@@ -1641,17 +1821,31 @@ export default function App() {
 
   const myDays = dayDiff(record.next_expiry_date);
 
-  // Add this inside your App component, before return
+  // Navigate to a student section
   const navigateStudentSection = (sectionId) => {
     document.getElementById(sectionId)?.scrollIntoView({
       behavior: 'smooth',
       block: 'start',
     });
   };
+  const handleDocumentUpload = async (event) => {
+    event.preventDefault();
+
+    if (!selectedDocument) {
+      setMessage('Please select a document first.');
+      return;
+    }
+
+    if (selectedDocument.size > 50 * 1024) {
+      setMessage('Document size must not exceed 50 KB.');
+      return;
+    }
+
+    setMessage('Document selected successfully.');
+  };
 
   return (
     <div className="app-frame">
-
       {/* Hamburger menu button */}
       <button
         type="button"
@@ -1664,14 +1858,16 @@ export default function App() {
       </button>
 
       {/* Dark overlay when drawer is open */}
-      {menuOpen && (
-        <button
-          type="button"
-          className="drawer-overlay"
-          aria-label="Close navigation menu"
-          onClick={() => setMenuOpen(false)}
-        />
-      )}
+      {
+        menuOpen && (
+          <button
+            type="button"
+            className="drawer-overlay"
+            aria-label="Close navigation menu"
+            onClick={() => setMenuOpen(false)}
+          />
+        )
+      }
 
       <aside
         className={`sidebar navigation-drawer ${menuOpen ? 'drawer-open' : ''
@@ -3083,6 +3279,6 @@ export default function App() {
           </>
         )}
       </main>
-    </div>
+    </div >
   );
 }
