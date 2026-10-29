@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-
 import {
   Activity,
   AlertCircle,
@@ -17,13 +16,15 @@ import {
   LogOut,
   Mail,
   MessageSquareText,
+  Menu,
   RefreshCw,
   Search,
   Send,
   ShieldCheck,
   Upload,
   Users,
-  XCircle,
+  X,
+  XCircle
 } from 'lucide-react';
 
 
@@ -227,6 +228,7 @@ export default function App() {
   const [selectedDocument, setSelectedDocument] = useState(null);
   const [uploadingDocument, setUploadingDocument] = useState(false);
   const [profile, setProfile] = useState(null);
+  const [menuOpen, setMenuOpen] = useState(false);
 
   const [record, setRecord] = useState({
     frro_issue_date: '',
@@ -1650,7 +1652,31 @@ export default function App() {
   return (
     <div className="app-frame">
 
-      <aside className="sidebar">
+      {/* Hamburger menu button */}
+      <button
+        type="button"
+        className="hamburger-button"
+        aria-label="Open navigation menu"
+        aria-expanded={menuOpen}
+        onClick={() => setMenuOpen(true)}
+      >
+        <Menu size={24} />
+      </button>
+
+      {/* Dark overlay when drawer is open */}
+      {menuOpen && (
+        <button
+          type="button"
+          className="drawer-overlay"
+          aria-label="Close navigation menu"
+          onClick={() => setMenuOpen(false)}
+        />
+      )}
+
+      <aside
+        className={`sidebar navigation-drawer ${menuOpen ? 'drawer-open' : ''
+          }`}
+      >
         <div className="brand sidebar-brand">
           <div className="brand-icon">MRU</div>
           <div>
@@ -1704,7 +1730,10 @@ export default function App() {
             <button
               type="button"
               className={`nav-item ${studentSection === 'dashboard' ? 'active' : ''}`}
-              onClick={() => setStudentSection('dashboard')}
+              onClick={() => {
+                setStudentSection('dashboard');
+                setMenuOpen(false);
+              }}
             >
               <LayoutDashboard size={18} />
               Dashboard
