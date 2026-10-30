@@ -34,9 +34,15 @@ import { Capacitor } from '@capacitor/core';
 import { FirebaseMessaging } from '@capacitor-firebase/messaging';
 
 
+const REMINDER_DAYS = [60, 45, 30, 21, 14, 10, 7, 3, 2, 1, 0];
 
-const REMINDER_DAYS = [60, 45, 30, 21, 14, 10, 7, 3, 2, 1];
-const todayISO = () => new Date().toISOString().slice(0, 10);
+const todayISO = () =>
+  new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kolkata',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date());
 const dayDiff = (date) => date ? Math.ceil((Date.parse(`${date}T00:00:00Z`) - Date.parse(`${todayISO()}T00:00:00Z`)) / 86400000) : null;
 const dateLabel = (date) => date ? new Date(`${date}T12:00:00`).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Not set';
 const timestampLabel = (value) =>
@@ -278,6 +284,8 @@ export default function App() {
   const [messageBody, setMessageBody] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
   const [sending, setSending] = useState(false);
+  const [messageChannel, setMessageChannel] = useState('in_app');
+  const [emailRequestId, setEmailRequestId] = useState(null);
   const [tab, setTab] = useState('renewals');
   const [studentSection, setStudentSection] = useState('dashboard');
 
@@ -617,6 +625,7 @@ export default function App() {
       flash(error.message || 'Unable to open this document.', 'error');
     }
   };
+
   const handleUpdatePassword = async (event) => {
     event.preventDefault();
 
@@ -626,14 +635,21 @@ export default function App() {
     }
 
     const form = event.currentTarget;
+
+    // Step 1: Send password reset email
     if (mode === 'forgot-password') {
       const email = form.elements.email.value.trim();
+
+      if (!email) {
+        flash('Please enter your email address.', 'error');
+        return;
+      }
 
       setSaving(true);
 
       try {
         const { error } = await supabase.auth.resetPasswordForEmail(email, {
-          redirectTo: window.location.origin,
+          redirectTo: `${window.location.origin}/`,
         });
 
         if (error) throw error;
@@ -643,13 +659,18 @@ export default function App() {
           'success'
         );
       } catch (error) {
-        flash(error.message || 'Unable to send the reset link.', 'error');
+        flash(
+          error.message || 'Unable to send the reset link.',
+          'error'
+        );
       } finally {
         setSaving(false);
       }
 
       return;
     }
+
+    // Step 2: Validate the new password
     const password = form.elements.newPassword.value;
 
     if (password.length < 8) {
@@ -660,21 +681,34 @@ export default function App() {
     setSaving(true);
 
     try {
-      const { error } = await supabase.auth.updateUser({ password });
+      // Step 3: Update password using the recovery session
+      const { error } = await supabase.auth.updateUser({
+        password,
+      });
 
       if (error) throw error;
 
+      // Step 4: Return to login
       setPasswordResetMode(false);
       setMode('login');
 
-      await supabase.auth.signOut();
+      const { error: signOutError } = await supabase.auth.signOut();
+
+      if (signOutError) {
+        console.error('Sign-out after password update:', signOutError);
+      }
 
       flash(
         'Password updated successfully. Please sign in with your new password.',
         'success'
       );
     } catch (error) {
-      flash(error.message || 'Unable to update your password.', 'error');
+      console.error('Password update failed:', error);
+
+      flash(
+        error.message || 'Unable to update your password.',
+        'error'
+      );
     } finally {
       setSaving(false);
     }
@@ -1334,7 +1368,6 @@ export default function App() {
     }
   }
 
-
   async function sendAnnouncement(event) {
     event.preventDefault();
 
@@ -1350,100 +1383,168 @@ export default function App() {
 
     setSending(true);
 
+    const title = messageTitle.trim();
+    const body = messageBody.trim();
+
     try {
       const recipients = students
         .filter(s => selectedStudents.includes(s.user_id))
         .map(s => ({
           user_id: s.user_id,
-          title: messageTitle.trim(),
-          body: messageBody.trim()
+          title,
+          body
         }));
 
       if (!recipients.length) {
         throw new Error('No selected student accounts were found.');
       }
 
+      const sendInAppAndPush =
+        messageChannel === 'in_app' || messageChannel === 'both';
 
-      const { error } = await supabase
-        .from('in_app_notifications')
-        .insert(recipients);
+      const sendEmail =
+        messageChannel === 'email' || messageChannel === 'both';
 
-      if (error) throw error;
+      const results = [];
 
-      // Send a push notification to each selected student.
-      const pushResults = await Promise.all(
-        recipients.map(async (recipient) => {
+      // 1. Save in-app notifications.
+      if (sendInAppAndPush) {
+        try {
+          const { error } = await supabase
+            .from('in_app_notifications')
+            .insert(recipients);
+
+          if (error) throw error;
+
+          results.push(
+            `In-app: saved for ${recipients.length} student(s).`
+          );
+        } catch (error) {
+          console.error('In-app announcement error:', error);
+          results.push(`In-app: failed — ${error.message}`);
+        }
+
+        // 2. Send Firebase device push notifications.
+        try {
+          const pushResults = await Promise.all(
+            recipients.map(async recipient => {
+              try {
+                const { data, error } = await supabase.functions.invoke(
+                  'send-push',
+                  {
+                    body: {
+                      user_id: recipient.user_id,
+                      title: recipient.title,
+                      message: recipient.body
+                    }
+                  }
+                );
+
+                if (error || data?.error) {
+                  return { success: false, sent: 0 };
+                }
+
+                return {
+                  success: true,
+                  sent: data?.sent ?? 0
+                };
+              } catch (error) {
+                console.error('Individual push error:', error);
+                return { success: false, sent: 0 };
+              }
+            })
+          );
+
+          const pushSent = pushResults.filter(
+            result => result.success && result.sent > 0
+          ).length;
+
+          const pushFailed = pushResults.filter(
+            result => !result.success
+          ).length;
+
+          const noDevice = pushResults.filter(
+            result => result.success && result.sent === 0
+          ).length;
+
+          results.push(
+            `Device push: ${pushSent} accepted, ${noDevice} without a registered device, ${pushFailed} failed.`
+          );
+        } catch (error) {
+          console.error('Push notification error:', error);
+          results.push(`Device push: failed — ${error.message}`);
+        }
+      }
+
+      // 3. Send email announcements.
+      if (sendEmail) {
+        try {
+          const requestId = emailRequestId || crypto.randomUUID();
+
+          if (!emailRequestId) {
+            setEmailRequestId(requestId);
+          }
+
           const { data, error } = await supabase.functions.invoke(
-            'send-push',
+            'send-admin-announcement',
             {
               body: {
-                user_id: recipient.user_id,
-                title: recipient.title,
-                message: recipient.body,
-              },
+                request_id: requestId,
+                user_ids: recipients.map(recipient => recipient.user_id),
+                title,
+                body
+              }
             }
           );
 
-          if (error) {
-            return { user_id: recipient.user_id, success: false };
+          if (error) throw error;
+          if (data?.error) throw new Error(data.error);
+
+          const emailSent = data?.sent ?? 0;
+          const emailFailed = data?.failed ?? 0;
+          const emailSkipped = data?.skipped ?? 0;
+
+          results.push(
+            `Email: ${emailSent} sent, ${emailFailed} failed, ${emailSkipped} skipped.`
+          );
+
+          // Reset the email request ID after a successful response.
+          if (emailFailed === 0) {
+            setEmailRequestId(null);
           }
-
-          if (data?.error) {
-            return { user_id: recipient.user_id, success: false };
-          }
-
-          return {
-            user_id: recipient.user_id,
-            success: true,
-            sent: data?.sent ?? 0,
-          };
-        })
-      );
-
-
-      const pushSent = pushResults.filter(
-        (result) => result.success && result.sent > 0
-      ).length;
-
-      const pushFailed = pushResults.filter(
-        (result) => !result.success
-      ).length;
-
-      const noDevice = pushResults.filter(
-        (result) => result.success && result.sent === 0
-      ).length;
-
-      console.log('Push notification results:', {
-        students: recipients.length,
-        pushSent,
-        pushFailed,
-        noDevice,
-        results: pushResults,
-      });
-
-      const pushNotSent = recipients.length - pushSent;
-
-      if (pushNotSent === 0) {
-        flash(
-          `Announcement saved.Push accepted by Firebase for ${pushSent} student(s).`
-        );
-      } else {
-        flash(
-          `Announcement saved for ${recipients.length} student(s).Push accepted for ${pushSent}; not confirmed for ${pushNotSent}.`,
-          'error'
-        );
+        } catch (error) {
+          console.error('Email announcement error:', error);
+          results.push(`Email: failed — ${error.message}`);
+        }
       }
 
-      setMessageTitle('');
-      setMessageBody('');
-      setSelectedStudents([]);
-    } catch (e) {
-      flash(e.message || 'Could not send announcement.', 'error');
+      console.log('Announcement results:', results);
+
+      const hasFailure = results.some(
+        result => result.includes('failed')
+      );
+
+      flash(
+        results.join(' | '),
+        hasFailure ? 'error' : 'success'
+      );
+
+      // Keep the message and recipients if a channel failed,
+      // so you can inspect the result before trying again.
+      if (!hasFailure) {
+        setMessageTitle('');
+        setMessageBody('');
+        setSelectedStudents([]);
+        setEmailRequestId(null);
+      }
+
+    } catch (error) {
+      console.error('Announcement error:', error);
+      flash(error.message || 'Could not send announcement.', 'error');
     } finally {
       setSending(false);
     }
   }
-
 
   async function markRead(id) {
     const { error } = await supabase.from('in_app_notifications').update({ read_at: new Date().toISOString() }).eq('id', id);
@@ -2725,9 +2826,10 @@ export default function App() {
               <section className="panel message-panel">
                 <div className="panel-heading">
                   <div>
-                    <h2>Push messages</h2>
+                    <h2>Announcements</h2>
                     <p>
-                      Send an in-app announcement to the students you selected.
+                      Send announcements through in-app notifications, device push,
+                      email, or both.
                     </p>
                   </div>
 
@@ -2754,6 +2856,27 @@ export default function App() {
                 </div>
 
                 <form className="message-form" onSubmit={sendAnnouncement}>
+                  <label>
+                    Sending method
+                    <select
+                      value={messageChannel}
+                      onChange={e => {
+                        setMessageChannel(e.target.value);
+                        setEmailRequestId(null);
+                      }}
+                    >
+                      <option value="in_app">
+                        In-app + device push
+                      </option>
+                      <option value="email">
+                        Email only
+                      </option>
+                      <option value="both">
+                        Both — in-app, device push and email
+                      </option>
+                    </select>
+                  </label>
+
                   <label>
                     Message title
                     <input
@@ -2782,7 +2905,6 @@ export default function App() {
                       <Users size={16} />
                       Recipients: {selectedStudents.length} selected students
                     </span>
-
 
                     <button
                       type="submit"

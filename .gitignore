@@ -3,3 +3,17 @@ dist
 .env
 .env.local
 .DS_Store
+
+# MRU FRRO local server secrets and student documents
+local-file-server/.env
+local-file-server/node_modules/
+local-file-server/storage/
+.DS_Store
+
+# Local nested repositories and development tools
+MRUFRROTRACKER/
+local-file-server/
+
+# Supabase local temporary files
+supabase/.branches/
+supabase/.temp/
