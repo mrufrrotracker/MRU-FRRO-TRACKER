@@ -1739,7 +1739,10 @@ export default function App() {
     return (
       <div className="auth-layout auth-layout-compact">
         <div className="auth-panel">
-          <form className="auth-card" onSubmit={handleAuth}>
+          <form
+            className="auth-card"
+            onSubmit={mode === 'forgot-password' ? handleForgotPassword : handleAuth}
+          >
             <div className="auth-card-head">
               <span className="eyebrow">
                 {mode === 'login'
